@@ -155,6 +155,7 @@ function AM.DB:GetCurrentCharacterDB()
             bank = {},
             mail = {},
             professions = {},
+            auctions = {},
             restXP = 0,
             maxXP = 1,
             isResting = false,
@@ -187,6 +188,36 @@ function AM.DB:UpdateCharacterInfo()
     charDB.logoutTime = time()
 end
 
+function AM.DB:IsQuiver(bag)
+    if bag == 0 or bag == 5 or bag == -2 then return false end
+    
+    if C_Container and C_Container.GetContainerNumFreeSlots then
+        local free, family = C_Container.GetContainerNumFreeSlots(bag)
+        if family == 1 or family == 2 then return true end
+    elseif GetContainerNumFreeSlots then
+        local free, family = GetContainerNumFreeSlots(bag)
+        if family == 1 or family == 2 then return true end
+    end
+    
+    local invID = ContainerIDToInventoryID and ContainerIDToInventoryID(bag)
+    if invID then
+        local itemID = GetInventoryItemID("player", invID)
+        if itemID then
+            local _, _, _, _, _, _, itemSubType
+            if C_Item and C_Item.GetItemInfo then
+                _, _, _, _, _, _, itemSubType = C_Item.GetItemInfo(itemID)
+            else
+                _, _, _, _, _, _, itemSubType = GetItemInfo(itemID)
+            end
+            if itemSubType == "Quiver" or itemSubType == "Ammo Pouch" or itemSubType == "Ammo" then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
 function AM.DB:UpdateBags()
     local charDB = self:GetCurrentCharacterDB()
     charDB.bags = {}
@@ -198,17 +229,38 @@ function AM.DB:UpdateBags()
     for i = 1, numBags do table.insert(bagsToScan, i) end
     if reagentBag then table.insert(bagsToScan, reagentBag) end
     
+    charDB.quiver = {}
+    charDB.quiverCapacity = 0
     charDB.bagCapacity = 0
     for _, bag in ipairs(bagsToScan) do
+        local isQuiv = self:IsQuiver(bag)
         local numSlots = C_Container.GetContainerNumSlots(bag)
         if numSlots then
-            charDB.bagCapacity = charDB.bagCapacity + numSlots
+            if isQuiv then
+                charDB.quiverCapacity = charDB.quiverCapacity + numSlots
+            else
+                charDB.bagCapacity = charDB.bagCapacity + numSlots
+            end
             for slot = 1, numSlots do
                 local info = C_Container.GetContainerItemInfo(bag, slot)
                 if info and info.hyperlink then
                     local itemID = info.itemID
-                    if not charDB.bags[itemID] then charDB.bags[itemID] = 0 end
-                    charDB.bags[itemID] = charDB.bags[itemID] + info.stackCount
+                    
+                    if C_Container.GetContainerItemQuestInfo then
+                        local isQuestItem, questId, isActive = C_Container.GetContainerItemQuestInfo(bag, slot)
+                        if questId and not isActive then
+                            AltManagerDB.QuestStarts = AltManagerDB.QuestStarts or {}
+                            AltManagerDB.QuestStarts[itemID] = true
+                        end
+                    end
+                    
+                    if isQuiv then
+                        if not charDB.quiver[itemID] then charDB.quiver[itemID] = 0 end
+                        charDB.quiver[itemID] = charDB.quiver[itemID] + info.stackCount
+                    else
+                        if not charDB.bags[itemID] then charDB.bags[itemID] = 0 end
+                        charDB.bags[itemID] = charDB.bags[itemID] + info.stackCount
+                    end
                 end
             end
         end
@@ -233,9 +285,10 @@ end
 function AM.DB:UpdateBank()
     local charDB = self:GetCurrentCharacterDB()
     charDB.bank = {}
-    
     charDB.bankCapacity = 0
-    -- Main bank
+    charDB.bankQuiver = {}
+    charDB.bankQuiverCapacity = 0
+    
     local bankID = Enum.BagIndex.Bank or -1
     local bankSlots = C_Container.GetContainerNumSlots(bankID)
     if bankSlots then
@@ -244,6 +297,15 @@ function AM.DB:UpdateBank()
             local info = C_Container.GetContainerItemInfo(bankID, slot)
             if info and info.hyperlink then
                 local itemID = info.itemID
+                
+                if C_Container.GetContainerItemQuestInfo then
+                    local isQuestItem, questId, isActive = C_Container.GetContainerItemQuestInfo(bankID, slot)
+                    if questId and not isActive then
+                        AltManagerDB.QuestStarts = AltManagerDB.QuestStarts or {}
+                        AltManagerDB.QuestStarts[itemID] = true
+                    end
+                end
+                
                 if not charDB.bank[itemID] then charDB.bank[itemID] = 0 end
                 charDB.bank[itemID] = charDB.bank[itemID] + info.stackCount
             end
@@ -252,20 +314,37 @@ function AM.DB:UpdateBank()
     
     -- Bank bags (Force skip 5)
     local startBag = 6
-
-    
     local endBag = startBag + (NUM_BANKBAGSLOTS or 7) - 1
     
     for bag = startBag, endBag do
+        local isQuiv = self:IsQuiver(bag)
         local numSlots = C_Container.GetContainerNumSlots(bag)
         if numSlots then
-            charDB.bankCapacity = charDB.bankCapacity + numSlots
+            if isQuiv then
+                charDB.bankQuiverCapacity = charDB.bankQuiverCapacity + numSlots
+            else
+                charDB.bankCapacity = charDB.bankCapacity + numSlots
+            end
             for slot = 1, numSlots do
                 local info = C_Container.GetContainerItemInfo(bag, slot)
                 if info and info.hyperlink then
                     local itemID = info.itemID
-                    if not charDB.bank[itemID] then charDB.bank[itemID] = 0 end
-                    charDB.bank[itemID] = charDB.bank[itemID] + info.stackCount
+                    
+                    if C_Container.GetContainerItemQuestInfo then
+                        local isQuestItem, questId, isActive = C_Container.GetContainerItemQuestInfo(bag, slot)
+                        if questId and not isActive then
+                            AltManagerDB.QuestStarts = AltManagerDB.QuestStarts or {}
+                            AltManagerDB.QuestStarts[itemID] = true
+                        end
+                    end
+                    
+                    if isQuiv then
+                        if not charDB.bankQuiver[itemID] then charDB.bankQuiver[itemID] = 0 end
+                        charDB.bankQuiver[itemID] = charDB.bankQuiver[itemID] + info.stackCount
+                    else
+                        if not charDB.bank[itemID] then charDB.bank[itemID] = 0 end
+                        charDB.bank[itemID] = charDB.bank[itemID] + info.stackCount
+                    end
                 end
             end
         end
@@ -304,16 +383,32 @@ function AM.DB:UpdateProfessions()
     
     if not GetProfessions then return end
     
-    local profs = { GetProfessions() }
+    local p1, p2, arch, fish, cook, fa = GetProfessions()
+    local profList = {
+        { index = p1 },
+        { index = p2 },
+        { index = arch, fallbackName = "Archaeology", fallbackIcon = "Interface\\Icons\\trade_archaeology" },
+        { index = fish, fallbackName = "Fishing", fallbackIcon = "Interface\\Icons\\trade_fishing" },
+        { index = cook, fallbackName = "Cooking", fallbackIcon = "Interface\\Icons\\inv_misc_food_15" },
+        { index = fa, fallbackName = "First Aid", fallbackIcon = "Interface\\Icons\\spell_holy_sealofsacrifice" }
+    }
     
-    for _, profIndex in pairs(profs) do
+    for _, pData in pairs(profList) do
+        local profIndex = pData.index
         if profIndex and type(profIndex) == "number" then
             local name, texture, rank, maxRank = GetProfessionInfo(profIndex)
-            if name then
+            
+            -- Beta API fallback for missing data
+            if not name or name == "" then name = pData.fallbackName end
+            if not texture or texture == "" then texture = pData.fallbackIcon end
+            
+            if name and name ~= "" then
                 local found = false
                 for _, op in ipairs(charDB.professions) do
-                    if op.name == name then
+                    if op.name == name or (pData.fallbackName and op.name == pData.fallbackName) then
                         found = true
+                        -- Ensure name is corrected if it was wrong
+                        op.name = name
                         if texture and texture ~= "" and (not op.texture or op.texture == "Interface\\Icons\\INV_Misc_QuestionMark") then
                             op.texture = texture
                         end
@@ -331,8 +426,8 @@ function AM.DB:UpdateProfessions()
                     table.insert(charDB.professions, {
                         name = name,
                         texture = texture,
-                        rank = rank,
-                        maxRank = maxRank,
+                        rank = rank or 1,
+                        maxRank = maxRank or 300,
                         recipes = {}
                     })
                 end
@@ -493,7 +588,7 @@ function AM.DB:UpdateRecipes()
     
     AM:DebugLog("AM.DB: Event Fired! GetTradeSkillLine returned: " .. tostring(profName))
     
-    if not profName or profName == "Unknown" then return end
+    if not profName or profName == "Unknown" or profName == "" then return end
     
     local profData = nil
     for _, p in ipairs(charDB.professions) do
@@ -630,6 +725,77 @@ end
 
 AM.Events["SKILL_LINES_CHANGED"] = function(self)
     AM.DB:UpdateProfessions()
+end
+
+function AM.DB:UpdateAuctions()
+    local charDB = AM.DB:GetCurrentCharacterDB()
+    local newAuctions = {}
+    
+    if C_AuctionHouse and C_AuctionHouse.GetOwnedAuctions then
+        local owned = C_AuctionHouse.GetOwnedAuctions()
+        for _, auc in ipairs(owned) do
+            local aucID = auc.auctionID
+            local link = auc.itemLink
+            local count = auc.quantity
+            local buyout = auc.buyoutAmount or auc.bidAmount or 0
+            
+            -- Modern API gives us exact time left if available!
+            local timeLeft = auc.timeLeftSeconds
+            
+            local expires = time() + (timeLeft or (24*3600))
+            if not timeLeft and charDB.auctions and aucID then
+                for _, oldAuc in ipairs(charDB.auctions) do
+                    if oldAuc.id == aucID and oldAuc.expires then
+                        expires = oldAuc.expires
+                        break
+                    end
+                end
+            end
+            
+            table.insert(newAuctions, {
+                id = aucID,
+                link = link,
+                count = count,
+                buyout = buyout,
+                expires = expires,
+                status = auc.status
+            })
+        end
+    elseif GetNumAuctionItems then
+        local num = GetNumAuctionItems("owner")
+        for i = 1, num do
+            local name, texture, count, quality, canUse, level, levelColHeader, minBid, minIncrement, buyoutPrice, bidAmount, highBidder, bidderFullName, owner, ownerFullName, saleStatus, itemID, hasAllInfo = GetAuctionItemInfo("owner", i)
+            local link = GetAuctionItemLink("owner", i)
+            local timeLeftBand = GetAuctionItemTimeLeft("owner", i) -- 1, 2, 3, 4
+            
+            local compKey = (itemID or "0") .. "_" .. (count or "0") .. "_" .. (buyoutPrice or "0")
+            local expires = time() + (24*3600)
+            
+            if charDB.auctions then
+                for _, oldAuc in ipairs(charDB.auctions) do
+                    if oldAuc.id == compKey and oldAuc.expires then
+                        expires = oldAuc.expires
+                        break
+                    end
+                end
+            end
+            
+            table.insert(newAuctions, {
+                id = compKey,
+                link = link,
+                count = count,
+                buyout = buyoutPrice or minBid or 0,
+                expires = expires,
+                status = saleStatus -- 1 = sold?
+            })
+        end
+    end
+    
+    charDB.auctions = newAuctions
+end
+
+AM.Events["OWNED_AUCTIONS_UPDATED"] = function(self)
+    AM.DB:UpdateAuctions()
 end
 
 AM.Core:RegisterEvent("ADDON_LOADED")

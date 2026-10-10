@@ -34,8 +34,10 @@ local function AM_FormatGold(money)
 end
 
 function AM:SellTrashItems()
-    local totalSold = 0
-    local soldItems = 0
+    if AM.isSellingTrash then return end
+    
+    local sellQueue = {}
+
     for bag = 0, NUM_BAG_SLOTS do
         local slots = C_Container.GetContainerNumSlots(bag)
         if slots then
@@ -51,18 +53,55 @@ function AM:SellTrashItems()
                     if (rarity == 0 or AM.DB:IsTrash(AM.DB:GetFullPlayerName(), bag, slot, itemID)) and (sellPrice and sellPrice > 0) then
                         local info = C_Container.GetContainerItemInfo(bag, slot)
                         if info and not info.isLocked then
-                            totalSold = totalSold + (sellPrice * info.stackCount)
-                            soldItems = soldItems + 1
-                            C_Container.UseContainerItem(bag, slot)
+                            table.insert(sellQueue, {bag = bag, slot = slot, itemID = itemID, price = sellPrice, count = info.stackCount})
                         end
                     end
                 end
             end
         end
     end
-    if soldItems > 0 then
-        print(string.format("|cffffff00AltManager|r: Sold %d trash items for %s", soldItems, AM_FormatGold(totalSold)))
+
+    if #sellQueue == 0 then return end
+    
+    AM.isSellingTrash = true
+    local totalSold = 0
+    local soldItems = 0
+
+    if not AM.sellFrame then
+        AM.sellFrame = CreateFrame("Frame")
     end
+
+    local lastTick = 0
+    AM.sellFrame:SetScript("OnUpdate", function(self, elapsed)
+        lastTick = lastTick + elapsed
+        -- Wait 0.1s between each sale to avoid server throttling
+        if lastTick < 0.1 then return end
+        lastTick = 0
+
+        -- Stop if merchant window was closed (give it a grace period for the first tick)
+        if not MerchantFrame or not MerchantFrame:IsShown() then
+            AM.isSellingTrash = false
+            self:SetScript("OnUpdate", nil)
+            return
+        end
+        
+        local item = table.remove(sellQueue, 1)
+        if not item then
+            AM.isSellingTrash = false
+            self:SetScript("OnUpdate", nil)
+            if soldItems > 0 then
+                print(string.format("|cffffff00AltManager|r: Sold %d trash items for %s", soldItems, AM_FormatGold(totalSold)))
+            end
+            return
+        end
+
+        local info = C_Container.GetContainerItemInfo(item.bag, item.slot)
+        if info and not info.isLocked and info.itemID == item.itemID then
+            totalSold = totalSold + (item.price * item.count)
+            soldItems = soldItems + 1
+            C_Container.UseContainerItem(item.bag, item.slot)
+        end
+    end)
 end
 
 local EQUIP_LOC_TO_SLOTS = {
@@ -442,9 +481,13 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         
         -- Gather data
         if not self.selectedCharacter then
+            local quiverItems = {}
             for _, sec in ipairs(self.liveSections) do
                 local secItems = {}
                 for _, bag in ipairs(sec.bags) do
+                    local isQuiv = AM.DB:IsQuiver(bag)
+                    local targetList = isQuiv and quiverItems or secItems
+                    
                     local slots = C_Container.GetContainerNumSlots(bag)
                     if slots then
                         for slot = 1, slots do
@@ -464,7 +507,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                                 value = sellPrice or 0
                             end
                             
-                            table.insert(secItems, {
+                            table.insert(targetList, {
                                 bag = bag,
                                 slot = slot,
                                 info = itemInfo,
@@ -482,6 +525,13 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     table.insert(allSectionsData, { config = sec, items = secItems })
                 end
             end
+            
+            if #quiverItems > 0 then
+                table.insert(allSectionsData, { 
+                    config = { title = "Quiver / Pouch", r = 0.4, g = 0.6, b = 1.0, a = 0.3 }, 
+                    items = quiverItems 
+                })
+            end
         else
             local ruleset = AM.DB:GetRuleset()
             local faction = AM.DB:GetFaction()
@@ -491,12 +541,17 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 local typesToRead = {}
                 if storageType == "combined" then
                     table.insert(typesToRead, "bank")
+                    table.insert(typesToRead, "bankQuiver")
                     table.insert(typesToRead, "bags")
+                    table.insert(typesToRead, "quiver")
                     table.insert(typesToRead, "profession")
                 elseif charDB[storageType] then
                     table.insert(typesToRead, storageType)
                     if storageType == "bags" then
+                        table.insert(typesToRead, "quiver")
                         table.insert(typesToRead, "profession")
+                    elseif storageType == "bank" then
+                        table.insert(typesToRead, "bankQuiver")
                     end
                 end
                 
@@ -540,6 +595,8 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     if sType == "bank" and charDB.bankCapacity then capacity = charDB.bankCapacity
                     elseif sType == "bags" and charDB.bagCapacity then capacity = charDB.bagCapacity
                     elseif sType == "profession" and charDB.profCapacity then capacity = charDB.profCapacity
+                    elseif sType == "quiver" and charDB.quiverCapacity then capacity = charDB.quiverCapacity
+                    elseif sType == "bankQuiver" and charDB.bankQuiverCapacity then capacity = charDB.bankQuiverCapacity
                     end
                     
                     local emptySlots = capacity - #secItems
@@ -550,7 +607,11 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     end
                     
                     if #secItems > 0 then
-                        local sTitle = (sType == "bank") and "Cached Bank" or ((sType == "profession") and "Cached Profession" or ("Cached " .. titleText))
+                        local sTitle = (sType == "bank") and "Cached Bank" 
+                            or ((sType == "profession") and "Cached Profession" 
+                            or ((sType == "quiver" or sType == "bankQuiver") and "Cached Quiver/Pouch" 
+                            or ("Cached " .. titleText)))
+                            
                         local bgR, bgG, bgB = 0.8, 0.8, 0.8
                         if sType == "bank" then
                             bgR, bgG, bgB = 0.8, 0.8, 0.9 -- Bluish grey for bank
@@ -558,6 +619,8 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             bgR, bgG, bgB = 1.0, 0.95, 0.5 -- Yellowish for bags
                         elseif sType == "profession" then
                             bgR, bgG, bgB = 0.4, 0.85, 0.4 -- Greenish for profession
+                        elseif sType == "quiver" or sType == "bankQuiver" then
+                            bgR, bgG, bgB = 0.4, 0.6, 1.0 -- Blue background for quivers
                         end
                         
                         table.insert(allSectionsData, {
@@ -826,6 +889,25 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         SetItemButtonDesaturated(btn, false)
                         btn:SetAlpha(1.0)
                     end
+                    
+                    if not btn.questIcon then
+                        btn.questIcon = btn:CreateTexture(nil, "OVERLAY")
+                        btn.questIcon:SetTexture("Interface\\ContainerFrame\\UI-Icon-QuestBang")
+                        btn.questIcon:SetSize(32, 32)
+                        btn.questIcon:SetPoint("BOTTOMLEFT", -2, -2)
+                    end
+                    
+                    local startsQuest = false
+                    if C_Container and C_Container.GetContainerItemQuestInfo then
+                        local _, qId, isAct = C_Container.GetContainerItemQuestInfo(item.bag, item.slot)
+                        if qId and not isAct then startsQuest = true end
+                    elseif item.link then
+                        local itemID = tonumber(string.match(item.link, "item:(%d+)"))
+                        if AltManagerDB and AltManagerDB.QuestStarts and itemID and AltManagerDB.QuestStarts[itemID] then
+                            startsQuest = true
+                        end
+                    end
+                    if startsQuest then btn.questIcon:Show() else btn.questIcon:Hide() end
                 else
                     btn = self.altButtons[btnAltIndex]
                     if not btn then
@@ -861,6 +943,22 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     else
                         btn.countStr:SetText("")
                     end
+                    
+                    if not btn.questIcon then
+                        btn.questIcon = btn:CreateTexture(nil, "OVERLAY")
+                        btn.questIcon:SetTexture("Interface\\ContainerFrame\\UI-Icon-QuestBang")
+                        btn.questIcon:SetSize(32, 32)
+                        btn.questIcon:SetPoint("BOTTOMLEFT", -2, -2)
+                    end
+                    
+                    local startsQuest = false
+                    if item.link then
+                        local itemID = tonumber(string.match(item.link, "item:(%d+)"))
+                        if AltManagerDB and AltManagerDB.QuestStarts and itemID and AltManagerDB.QuestStarts[itemID] then
+                            startsQuest = true
+                        end
+                    end
+                    if startsQuest then btn.questIcon:Show() else btn.questIcon:Hide() end
                     
                     if item.isFiltered then
                         btn.icon:SetDesaturated(true)

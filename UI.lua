@@ -293,88 +293,7 @@ function AM.UI:ShowItems(charName, storageType)
     viewer.scrollChild:SetHeight(totalRows * (iconSize + padding) + padding)
 end
 
-function AM.UI:ShowProfessions(charName)
-    local viewer = AM.UI.ItemViewer
-    viewer:Show()
-    if viewer.sortBtn then viewer.sortBtn:Hide() end
-    viewer.title:SetText(charName .. "'s Professions")
-    
-    local ruleset = AM.DB:GetRuleset()
-    local faction = AM.DB:GetFaction()
-    local charData = AltManagerDB[ruleset][faction][charName]
-    local profs = charData.professions or {}
-    
-    AM.UI:ClearViewer()
-    
-    local index = 1
-    local col = 0
-    local row = 0
-    local maxCols = 5
-    local iconSize = 37
-    local padding = 4
-    
-    for _, prof in ipairs(profs) do
-        local btn = itemButtons[index]
-        if not btn then
-            btn = CreateFrame("Button", nil, viewer.scrollChild)
-            btn:SetSize(iconSize, iconSize)
-            
-            btn.icon = btn:CreateTexture(nil, "BORDER")
-            btn.icon:SetAllPoints()
-            
-            btn.countText = btn:CreateFontString(nil, "ARTWORK", "NumberFontNormal")
-            btn.countText:SetPoint("BOTTOMRIGHT", -2, 2)
-            
-            btn.border = btn:CreateTexture(nil, "OVERLAY")
-            btn.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
-            btn.border:SetSize(iconSize * 1.6, iconSize * 1.6)
-            btn.border:SetPoint("CENTER", 0, 0)
-            
-            btn:SetPushedTexture("Interface\\Buttons\\UI-Quickslot-Depress")
-            btn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
-            table.insert(itemButtons, btn)
-        end
-        
-        -- Override scripts for professions
-        btn:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:AddLine(self.profName, 1, 1, 1)
-            GameTooltip:AddLine("Level: " .. self.profRank .. " / " .. self.profMax, 1, 0.82, 0)
-            GameTooltip:AddLine("<Click to view recipes>", 0, 1, 0)
-            GameTooltip:Show()
-        end)
-        btn:SetScript("OnLeave", function(self)
-            GameTooltip:Hide()
-        end)
-        btn:SetScript("OnClick", function(self)
-            AM.UI:ShowRecipes(charName, self.profName)
-        end)
-        
-        btn.profName = prof.name
-        btn.profRank = prof.rank
-        btn.profMax = prof.maxRank
-        
-        btn.icon:SetTexture(prof.texture or "Interface\\Icons\\INV_Misc_QuestionMark")
-        btn.border:SetVertexColor(1, 1, 1)
-        btn.countText:SetText(prof.rank)
-        
-        local x = col * (iconSize + padding) + padding
-        local y = -(row * (iconSize + padding)) - padding
-        btn:SetPoint("TOPLEFT", x, y)
-        
-        col = col + 1
-        if col >= maxCols then
-            col = 0
-            row = row + 1
-        end
-        
-        btn:Show()
-        index = index + 1
-    end
-    
-    local totalRows = math.ceil((index - 1) / maxCols)
-    viewer.scrollChild:SetHeight(totalRows * (iconSize + padding) + padding)
-end
+-- ShowProfessions has been removed as they are now listed in the row directly.
 
 function AM.UI:ShowRecipes(charName, profName)
     local viewer = AM.UI.ItemViewer
@@ -609,6 +528,128 @@ function AM.UI:ShowRecipes(charName, profName)
     viewer.scrollChild:SetHeight((index - 1) * rowHeight)
 end
 
+function AM.UI:ShowAuctions(charName)
+    local viewer = AM.UI.ItemViewer
+    viewer:Show()
+    if viewer.sortBtn then viewer.sortBtn:Hide() end
+    viewer.title:SetText(charName .. "'s Auctions")
+    
+    local ruleset = AM.DB:GetRuleset()
+    local faction = AM.DB:GetFaction()
+    local charData = AltManagerDB[ruleset][faction][charName]
+    local auctions = charData.auctions or {}
+    
+    AM.UI:ClearViewer()
+    if not AM.UI.recipeRows then AM.UI.recipeRows = {} end
+    local recipeRows = AM.UI.recipeRows
+    
+    local rowHeight = 30
+    local index = 1
+    
+    table.sort(auctions, function(a, b)
+        local timeA = a.expires or 0
+        local timeB = b.expires or 0
+        return timeA < timeB
+    end)
+    
+    local function FormatTimeLeft(expires)
+        local diff = expires - time()
+        if diff <= 0 then return "|cFF00FF00Expired/Sold|r" end
+        if diff < 3600 then return string.format("%dm", math.floor(diff/60)) end
+        if diff < 86400 then return string.format("%dh %dm", math.floor(diff/3600), math.floor((diff%3600)/60)) end
+        return string.format("%dd %dh", math.floor(diff/86400), math.floor((diff%86400)/3600))
+    end
+    
+    local function FormatSmallGold(money)
+        if money == 0 then return "0c" end
+        local g = math.floor(money / 10000)
+        local s = math.floor((money % 10000) / 100)
+        local c = money % 100
+        local str = ""
+        if g > 0 then str = str .. g .. "g" end
+        if s > 0 then str = str .. s .. "s" end
+        if c > 0 and g == 0 then str = str .. c .. "c" end
+        return str
+    end
+    
+    for _, auc in ipairs(auctions) do
+        local row = recipeRows[index]
+        if not row then
+            row = CreateFrame("Button", nil, viewer.scrollChild)
+            row:SetSize(viewer:GetWidth() - 20, rowHeight)
+            row:RegisterForClicks("AnyUp")
+            
+            row.icon = row:CreateTexture(nil, "ARTWORK")
+            row.icon:SetSize(24, 24)
+            row.icon:SetPoint("LEFT", 5, 0)
+            
+            row.nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            row.nameText:SetPoint("LEFT", row.icon, "RIGHT", 5, 5)
+            row.nameText:SetPoint("RIGHT", -120, 5)
+            row.nameText:SetJustifyH("LEFT")
+            
+            row.timeText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.timeText:SetPoint("LEFT", row.icon, "RIGHT", 5, -8)
+            row.timeText:SetJustifyH("LEFT")
+            
+            row.priceText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+            row.priceText:SetPoint("RIGHT", -5, 5)
+            row.priceText:SetJustifyH("RIGHT")
+            
+            row.cutText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.cutText:SetPoint("RIGHT", -5, -8)
+            row.cutText:SetJustifyH("RIGHT")
+            row.cutText:SetTextColor(0.5, 1, 0.5)
+            
+            row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+            table.insert(recipeRows, row)
+        end
+        
+        row.link = auc.link
+        
+        local tex = "Interface\\Icons\\INV_Misc_QuestionMark"
+        local itemName = "Unknown Item"
+        if auc.link then
+            if C_Item and C_Item.GetItemInfo then
+                local n, _, _, _, _, _, _, _, _, t = C_Item.GetItemInfo(auc.link)
+                if n then itemName = n end
+                if t then tex = t end
+            else
+                local n, _, _, _, _, _, _, _, _, t = GetItemInfo(auc.link)
+                if n then itemName = n end
+                if t then tex = t end
+            end
+            itemName = auc.link
+        end
+        
+        row.icon:SetTexture(tex)
+        row.nameText:SetText(itemName .. (auc.count and auc.count > 1 and (" x" .. auc.count) or ""))
+        
+        row.timeText:SetText("Expires in: " .. FormatTimeLeft(auc.expires))
+        row.priceText:SetText(FormatSmallGold(auc.buyout))
+        row.cutText:SetText("Net: " .. FormatSmallGold(math.floor(auc.buyout * 0.95)))
+        
+        row:SetPoint("TOPLEFT", 0, -(index - 1) * rowHeight)
+        row:Show()
+        
+        row:SetScript("OnEnter", function(self)
+            if self.link then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetHyperlink(self.link)
+                GameTooltip:Show()
+            end
+        end)
+        
+        row:SetScript("OnLeave", function(self)
+            GameTooltip:Hide()
+        end)
+        
+        index = index + 1
+    end
+    
+    viewer.scrollChild:SetHeight((index - 1) * rowHeight)
+end
+
 function AM.UI:ToggleMainFrame()
     if AM.UI.MainFrame:IsShown() then
         AM.UI.MainFrame:Hide()
@@ -653,38 +694,63 @@ local function CreateCharacterRow(index)
     row.restXPText:SetJustifyH("LEFT")
     row.restXPText:SetTextColor(0.5, 0.5, 1) -- Light blue for Rest XP
     
-    -- Bag Button
-    row.bagBtn = CreateFrame("Button", nil, row)
-    row.bagBtn:SetSize(24, 24)
-    row.bagBtn:SetPoint("LEFT", 170, 0)
-    row.bagBtn:SetNormalTexture("Interface\\Buttons\\Button-Backpack-Up")
-    row.bagBtn:SetPushedTexture("Interface\\Buttons\\Button-Backpack-Down")
-    row.bagBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
-    row.bagBtn:SetScript("OnClick", function() AM.UI:ShowItems(row.charName, "Bags") end)
-    
-    -- Bank Button
+    -- Inventory (Bank/Bags) Button
     row.bankBtn = CreateFrame("Button", nil, row)
     row.bankBtn:SetSize(24, 24)
-    row.bankBtn:SetPoint("LEFT", 200, 0)
+    row.bankBtn:SetPoint("LEFT", 170, 0)
     row.bankBtn:SetNormalTexture("Interface\\Icons\\INV_Box_01")
     row.bankBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
-    row.bankBtn:SetScript("OnClick", function() AM.UI:ShowItems(row.charName, "Bank") end)
+    row.bankBtn:SetScript("OnClick", function()
+        if not AM.UI.AltInventoryWindow then
+            AM.UI.AltInventoryWindow = AM:CreateInventoryWindow("AltManagerAltInventory", "Inventory", "combined", nil, true)
+        end
+        AM.UI.AltInventoryWindow.selectedCharacter = row.charName
+        AM.UI.AltInventoryWindow.title:SetText("Alt Manager - Inventory (" .. row.charName .. ")")
+        AM.UI.AltInventoryWindow:Update()
+        AM.UI.AltInventoryWindow:Show()
+    end)
+    row.bankBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("View Combined Inventory (Bags & Bank)")
+        GameTooltip:Show()
+    end)
+    row.bankBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
     
     -- Mail Button
     row.mailBtn = CreateFrame("Button", nil, row)
     row.mailBtn:SetSize(24, 24)
-    row.mailBtn:SetPoint("LEFT", 230, 0)
+    row.mailBtn:SetPoint("LEFT", 200, 0)
     row.mailBtn:SetNormalTexture("Interface\\Minimap\\Tracking\\Mailbox")
     row.mailBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
     row.mailBtn:SetScript("OnClick", function() AM.UI:ShowItems(row.charName, "Mail") end)
     
-    -- Profession Button
-    row.profBtn = CreateFrame("Button", nil, row)
-    row.profBtn:SetSize(24, 24)
-    row.profBtn:SetPoint("LEFT", 260, 0)
-    row.profBtn:SetNormalTexture("Interface\\Icons\\Trade_BlackSmithing")
-    row.profBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
-    row.profBtn:SetScript("OnClick", function() AM.UI:ShowProfessions(row.charName) end)
+    -- Glow for new/cached mail
+    row.mailGlow = row.mailBtn:CreateTexture(nil, "OVERLAY")
+    row.mailGlow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+    row.mailGlow:SetBlendMode("ADD")
+    row.mailGlow:SetSize(36, 36)
+    row.mailGlow:SetPoint("CENTER", 0, 0)
+    row.mailGlow:SetVertexColor(1, 1, 0, 0.8) -- Yellow glow
+    row.mailGlow:Hide()
+    
+    -- Auctions Button
+    row.aucBtn = CreateFrame("Button", nil, row)
+    row.aucBtn:SetSize(24, 24)
+    row.aucBtn:SetPoint("LEFT", 230, 0)
+    row.aucBtn:SetNormalTexture("Interface\\Icons\\INV_Misc_Coin_02")
+    row.aucBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
+    row.aucBtn:SetScript("OnClick", function() AM.UI:ShowAuctions(row.charName) end)
+    row.aucBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("View Auctions")
+        GameTooltip:Show()
+    end)
+    row.aucBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
+    
+    -- Profession Container (Dynamic)
+    row.profContainer = CreateFrame("Frame", nil, row)
+    row.profContainer:SetSize(300, 30)
+    row.profContainer:SetPoint("LEFT", 270, 0)
     
     -- Gold Text
     row.goldText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -760,18 +826,89 @@ function AM.UI:RefreshData()
             row.restXPText:SetText("")
         end
         
-        -- Check if professions exist to show the button
+        -- Check if professions exist and spawn icons dynamically
+        if not row.profButtons then row.profButtons = {} end
+        for _, pb in ipairs(row.profButtons) do pb:Hide() end
+        
+        local currentX = 0
         if charData.professions and #charData.professions > 0 then
-            row.profBtn:Show()
+            -- Cleanup bugged blank professions that were mistakenly saved
+            for i = #charData.professions, 1, -1 do
+                local p = charData.professions[i]
+                if not p.name or p.name == "" then
+                    table.remove(charData.professions, i)
+                end
+            end
+            
+            for i, prof in ipairs(charData.professions) do
+                local pBtn = row.profButtons[i]
+                if not pBtn then
+                    pBtn = CreateFrame("Button", nil, row.profContainer)
+                    pBtn:SetSize(20, 20)
+                    
+                    pBtn.icon = pBtn:CreateTexture(nil, "BORDER")
+                    pBtn.icon:SetAllPoints()
+                    
+                    pBtn.rankText = pBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                    pBtn.rankText:SetPoint("LEFT", pBtn, "RIGHT", 3, 0)
+                    pBtn.rankText:SetTextColor(0.8, 0.8, 0.8)
+                    
+                    pBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
+                    
+                    pBtn:SetScript("OnEnter", function(self)
+                        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                        GameTooltip:AddLine(self.profName, 1, 1, 1)
+                        GameTooltip:AddLine("Level: " .. self.profRank .. " / " .. self.profMax, 1, 0.82, 0)
+                        GameTooltip:AddLine("<Click to view recipes>", 0, 1, 0)
+                        GameTooltip:Show()
+                    end)
+                    pBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
+                    
+                    row.profButtons[i] = pBtn
+                end
+                
+                pBtn.profName = prof.name
+                pBtn.profRank = prof.rank
+                pBtn.profMax = prof.maxRank
+                
+                pBtn:SetScript("OnClick", function(self)
+                    AM.UI:ShowRecipes(row.charName, self.profName)
+                end)
+                
+                pBtn.icon:SetTexture(prof.texture or "Interface\\Icons\\INV_Misc_QuestionMark")
+                pBtn.rankText:SetText(prof.rank)
+                
+                pBtn:SetPoint("LEFT", row.profContainer, "LEFT", currentX, 0)
+                currentX = currentX + 20 + pBtn.rankText:GetStringWidth() + 10
+                
+                pBtn:Show()
+            end
+        end
+        
+        -- Check if auctions exist to show the button
+        if charData.auctions and #charData.auctions > 0 then
+            row.aucBtn:Show()
         else
-            row.profBtn:Hide()
+            row.aucBtn:Hide()
         end
         
         -- Check if mail exists to show the button
         local hasMail = false
+        local hasNewMail = false
         if charData.mail then
             for k, v in pairs(charData.mail) do
-                if v > 0 then hasMail = true; break end
+                if v > 0 then hasMail = true; hasNewMail = true; break end
+            end
+        end
+        
+        -- Check for expired auctions
+        if charData.auctions then
+            for _, auc in ipairs(charData.auctions) do
+                if auc.expires and time() >= (auc.expires + 3600) then
+                    hasMail = true
+                    hasNewMail = true
+                    break
+                end
             end
         end
         
@@ -779,6 +916,12 @@ function AM.UI:RefreshData()
             row.mailBtn:Show()
         else
             row.mailBtn:Hide()
+        end
+        
+        if hasNewMail then
+            row.mailGlow:Show()
+        else
+            row.mailGlow:Hide()
         end
         
         -- Set Gold

@@ -26,3 +26,4 @@ function AM:DebugLog(msg)
         table.remove(AltManagerDebugLog, 1)
     end
 end
+AM.Core:RegisterEvent("OWNED_AUCTIONS_UPDATED")
