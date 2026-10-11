@@ -33,6 +33,71 @@ local function AM_FormatGold(money)
     return string.format("%dg %ds %dc", gold, silver, copper)
 end
 
+function AM:GetLiveBankBags()
+    local mainBankID = (Enum and Enum.BagIndex and Enum.BagIndex.Bank) or -1
+    local tab1 = (Enum and Enum.BagIndex and Enum.BagIndex.CharacterBankTab_1) or 6
+    
+    local mainSlots = (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerNumSlots(mainBankID)) or 0
+    local tab1Slots = (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerNumSlots(tab1)) or 0
+    
+    local primaryBank = mainBankID
+    if tab1Slots > 0 and mainSlots > 0 then
+        local mainHasItems = false
+        for s = 1, mainSlots do
+            if C_Container.GetContainerItemLink(mainBankID, s) then
+                mainHasItems = true
+                break
+            end
+        end
+        local tab1HasItems = false
+        for s = 1, tab1Slots do
+            if C_Container.GetContainerItemLink(tab1, s) then
+                tab1HasItems = true
+                break
+            end
+        end
+        if tab1HasItems and not mainHasItems then
+            primaryBank = tab1
+        elseif mainHasItems and not tab1HasItems then
+            primaryBank = mainBankID
+        elseif tab1Slots > mainSlots then
+            primaryBank = tab1
+        else
+            primaryBank = mainBankID
+        end
+    elseif tab1Slots > 0 then
+        primaryBank = tab1
+    else
+        primaryBank = mainBankID
+    end
+    
+    local bankBags = { primaryBank }
+    
+    local startBag = 6
+    if primaryBank == 6 then startBag = 7 end
+    local endBag = startBag + (NUM_BANKBAGSLOTS or 7) - 1
+    
+    for b = startBag, endBag do
+        local n = C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerNumSlots(b)
+        if n and n > 0 then
+            local invID = ContainerIDToInventoryID and ContainerIDToInventoryID(b)
+            local hasEquippedBag = invID and GetInventoryItemLink and (GetInventoryItemLink("player", invID) ~= nil)
+            local hasItems = false
+            for s = 1, n do
+                if C_Container.GetContainerItemLink(b, s) then
+                    hasItems = true
+                    break
+                end
+            end
+            if hasEquippedBag or hasItems then
+                table.insert(bankBags, b)
+            end
+        end
+    end
+    
+    return bankBags
+end
+
 function AM:SellTrashItems()
     if AM.isSellingTrash then return end
     
@@ -262,33 +327,92 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     end
     
     -- Sort Buttons in the column
-    local btnAuto = CreateIconButton(win, windowName.."SortAuto", "Interface\\Icons\\INV_Pet_Broom", "Auto Sort", "TOPLEFT", win, "TOPLEFT", 10, -60, function()
-        if not win.selectedCharacter and C_Container and C_Container.SortBags then
+    local btnAuto = CreateIconButton(win, windowName.."SortAuto", "Interface\\Icons\\INV_Pet_Broom", "Auto Sort", "TOPLEFT", win, "TOPLEFT", 10, -60, function(self, button)
+        win.currentSort = nil
+        win:Update()
+        if not win.selectedCharacter and C_Container then
             if storageType == "bags" then
-                C_Container.SortBags()
+                if C_Container.SortBags then C_Container.SortBags() end
             elseif storageType == "bank" then
                 if C_Container.SortBankBags then C_Container.SortBankBags() end
+            elseif storageType == "combined" then
+                if button == "RightButton" then
+                    -- Right-Click: Sort Bank only
+                    if C_Container.SortBankBags then C_Container.SortBankBags() end
+                elseif IsShiftKeyDown and IsShiftKeyDown() then
+                    -- Shift-Click: Sort Bags only
+                    if C_Container.SortBags then C_Container.SortBags() end
+                else
+                    -- Left-Click: Sort Bank first, then Bags as soon as Bank sorting settles
+                    if C_Container.SortBankBags then
+                        C_Container.SortBankBags()
+                    end
+                    
+                    if C_Container.SortBags then
+                        local bankBags = AM:GetLiveBankBags()
+                        local checkCount = 0
+                        local maxChecks = 30 -- max 3 seconds timeout
+                        local ticker
+                        ticker = C_Timer.NewTicker(0.1, function()
+                            checkCount = checkCount + 1
+                            local hasLocks = false
+                            for _, b in ipairs(bankBags) do
+                                local slots = C_Container.GetContainerNumSlots(b)
+                                if slots then
+                                    for s = 1, slots do
+                                        local info = C_Container.GetContainerItemInfo(b, s)
+                                        if info and info.isLocked then
+                                            hasLocks = true
+                                            break
+                                        end
+                                    end
+                                end
+                                if hasLocks then break end
+                            end
+                            
+                            -- When bank finishes moving items (unlocked) or on timeout, start sorting bags
+                            if (checkCount >= 2 and not hasLocks) or checkCount >= maxChecks then
+                                ticker:Cancel()
+                                if C_Container.SortBags then
+                                    C_Container.SortBags()
+                                end
+                            end
+                        end)
+                    end
+                end
             end
         end
     end)
+    btnAuto:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    
+    if storageType == "combined" then
+        btnAuto:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine("Auto Sort", 1, 1, 1)
+            GameTooltip:AddLine("Left Click: Sort Both (Bank then Bags)", 1, 0.82, 0)
+            GameTooltip:AddLine("Right Click: Sort Bank only", 0.7, 0.7, 0.7)
+            GameTooltip:AddLine("Shift + Click: Sort Bags only", 0.7, 0.7, 0.7)
+            GameTooltip:Show()
+        end)
+    end
     
     local btnRarity = CreateIconButton(win, windowName.."SortRarity", "Interface\\Icons\\INV_Misc_Gem_Diamond_02", "Sort by Rarity", "TOPLEFT", win, "TOPLEFT", 10, -90, function()
-        win.currentSort = "rarity"
+        win.currentSort = (win.currentSort == "rarity") and nil or "rarity"
         win:Update()
     end)
     
     local btnValue = CreateIconButton(win, windowName.."SortValue", "Interface\\Icons\\INV_Misc_Coin_02", "Sort by Value", "TOPLEFT", win, "TOPLEFT", 10, -120, function()
-        win.currentSort = "value"
+        win.currentSort = (win.currentSort == "value") and nil or "value"
         win:Update()
     end)
     
     local btnName = CreateIconButton(win, windowName.."SortName", "Interface\\Icons\\INV_Misc_Note_01", "Sort by Name", "TOPLEFT", win, "TOPLEFT", 10, -150, function()
-        win.currentSort = "name"
+        win.currentSort = (win.currentSort == "name") and nil or "name"
         win:Update()
     end)
     
     local btnTrashSort = CreateIconButton(win, windowName.."SortTrash", "Interface\\Icons\\INV_Box_03", "Trash Sort", "TOPLEFT", win, "TOPLEFT", 10, -180, function()
-        win.currentSort = "trash"
+        win.currentSort = (win.currentSort == "trash") and nil or "trash"
         win:Update()
     end)
     
@@ -484,7 +608,18 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             local quiverItems = {}
             for _, sec in ipairs(self.liveSections) do
                 local secItems = {}
-                for _, bag in ipairs(sec.bags) do
+                local bagsToScan = sec.bags
+                if sec.title == "Bank" then
+                    bagsToScan = AM:GetLiveBankBags()
+                end
+                for _, bag in ipairs(bagsToScan) do
+                    if not self.bagDummies[bag] then
+                        local dummy = CreateFrame("Frame", nil, self)
+                        dummy:SetID(bag)
+                        dummy:SetAllPoints()
+                        dummy:SetFrameLevel(self:GetFrameLevel() + 5)
+                        self.bagDummies[bag] = dummy
+                    end
                     local isQuiv = AM.DB:IsQuiver(bag)
                     local targetList = isQuiv and quiverItems or secItems
                     
@@ -890,24 +1025,32 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         btn:SetAlpha(1.0)
                     end
                     
-                    if not btn.questIcon then
-                        btn.questIcon = btn:CreateTexture(nil, "OVERLAY")
-                        btn.questIcon:SetTexture("Interface\\ContainerFrame\\UI-Icon-QuestBang")
-                        btn.questIcon:SetSize(32, 32)
-                        btn.questIcon:SetPoint("BOTTOMLEFT", -2, -2)
+                    local startsQuest = false
+                    if not item.isEmpty then
+                        local itemID = (item.info and item.info.itemID) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
+                        startsQuest = AM.DB:ItemStartsQuest(itemID, item.link, item.bag, item.slot)
                     end
                     
-                    local startsQuest = false
-                    if C_Container and C_Container.GetContainerItemQuestInfo then
-                        local _, qId, isAct = C_Container.GetContainerItemQuestInfo(item.bag, item.slot)
-                        if qId and not isAct then startsQuest = true end
-                    elseif item.link then
-                        local itemID = tonumber(string.match(item.link, "item:(%d+)"))
-                        if AltManagerDB and AltManagerDB.QuestStarts and itemID and AltManagerDB.QuestStarts[itemID] then
-                            startsQuest = true
+                    if btn.IconQuestTexture then
+                        if btn.questIcon then btn.questIcon:Hide() end
+                        if startsQuest then
+                            btn.IconQuestTexture:SetTexture(TEXTURE_ITEM_QUEST_BANG or "Interface\\ContainerFrame\\UI-Icon-QuestBang")
+                            btn.IconQuestTexture:Show()
+                        else
+                            btn.IconQuestTexture:Hide()
+                        end
+                    else
+                        if not btn.questIcon then
+                            btn.questIcon = btn:CreateTexture(nil, "OVERLAY", nil, 7)
+                            btn.questIcon:SetAllPoints(btn)
+                            btn.questIcon:SetTexture(TEXTURE_ITEM_QUEST_BANG or "Interface\\ContainerFrame\\UI-Icon-QuestBang")
+                        end
+                        if startsQuest then
+                            btn.questIcon:Show()
+                        else
+                            btn.questIcon:Hide()
                         end
                     end
-                    if startsQuest then btn.questIcon:Show() else btn.questIcon:Hide() end
                 else
                     btn = self.altButtons[btnAltIndex]
                     if not btn then
@@ -945,18 +1088,15 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     end
                     
                     if not btn.questIcon then
-                        btn.questIcon = btn:CreateTexture(nil, "OVERLAY")
-                        btn.questIcon:SetTexture("Interface\\ContainerFrame\\UI-Icon-QuestBang")
-                        btn.questIcon:SetSize(32, 32)
-                        btn.questIcon:SetPoint("BOTTOMLEFT", -2, -2)
+                        btn.questIcon = btn:CreateTexture(nil, "OVERLAY", nil, 7)
+                        btn.questIcon:SetAllPoints(btn)
+                        btn.questIcon:SetTexture(TEXTURE_ITEM_QUEST_BANG or "Interface\\ContainerFrame\\UI-Icon-QuestBang")
                     end
                     
                     local startsQuest = false
-                    if item.link then
-                        local itemID = tonumber(string.match(item.link, "item:(%d+)"))
-                        if AltManagerDB and AltManagerDB.QuestStarts and itemID and AltManagerDB.QuestStarts[itemID] then
-                            startsQuest = true
-                        end
+                    if not item.isEmpty then
+                        local itemID = item.itemID or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
+                        startsQuest = AM.DB:ItemStartsQuest(itemID, item.link, nil, nil)
                     end
                     if startsQuest then btn.questIcon:Show() else btn.questIcon:Hide() end
                     
@@ -1087,15 +1227,36 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         self:SetSize(COLUMNS * (BUTTON_SIZE + SPACING) + 60, finalHeight)
     end
     
+    local updateTimer = nil
+    local function RequestUpdate(delay)
+        if not win:IsShown() then return end
+        if updateTimer then return end
+        updateTimer = C_Timer.NewTimer(delay or 0.1, function()
+            updateTimer = nil
+            if win:IsShown() then win:Update() end
+        end)
+    end
+    win.RequestUpdate = RequestUpdate
+
     win:SetScript("OnEvent", function(self, event, ...)
-        if self:IsShown() then self:Update() end
+        if not self:IsShown() then return end
+        if event == "BAG_UPDATE_DELAYED" then
+            if updateTimer then
+                updateTimer:Cancel()
+                updateTimer = nil
+            end
+            self:Update()
+        else
+            RequestUpdate(0.1)
+        end
     end)
-    if storageType == "bags" then
+    if storageType == "bags" or storageType == "combined" then
         win:RegisterEvent("BAG_UPDATE")
-    else
+    end
+    if storageType == "bank" or storageType == "combined" then
         win:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
     end
-    win:RegisterEvent("ITEM_LOCK_CHANGED")
+    pcall(win.RegisterEvent, win, "BAG_UPDATE_DELAYED")
     win:RegisterEvent("BAG_UPDATE_COOLDOWN")
     win:RegisterEvent("GET_ITEM_INFO_RECEIVED")
     
@@ -1109,12 +1270,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     return win
 end
 
-local bankStart = 6
-local bankEnd = bankStart + (NUM_BANKBAGSLOTS or 7) - 1
-local bankBagList = {}
-for i = bankStart, bankEnd do table.insert(bankBagList, i) end
-
-local mainBankID = (Enum and Enum.BagIndex and Enum.BagIndex.Bank) or -1
+local bankBagList = AM:GetLiveBankBags()
 
 -- Create the Windows
 AM.BagUI = AM:CreateInventoryWindow("AltManagerBagUI", "Bags", "bags", {
@@ -1130,61 +1286,84 @@ AM.BankUI = AM:CreateInventoryWindow("AltManagerBankUI", "Bank & Bags", "combine
     { title = "Key Ring", bags = {-2}, r=0.6, g=0.8, b=1.0, a=0.3 }
 }, true)
 
--- Hooks for Bags
+-- Hooks for Bags (using hooksecurefunc to avoid protected frame / BankFrame taint)
 local function AreDefaultBagsOpen()
     if ContainerFrame1 and ContainerFrame1:IsShown() then return true end
     return false
 end
 
-if not AM.originalToggleAllBags then
-    AM.originalToggleAllBags = ToggleAllBags
-    ToggleAllBags = function()
-        if AM.forceBlizz then 
-            AM.originalToggleAllBags()
-            -- If user closes default bags via keybind, break out of forceBlizz
-            if not AreDefaultBagsOpen() then
-                AM.forceBlizz = false
+local function HideDefaultBags()
+    if AM.forceBlizz then return end
+    for i = 1, NUM_CONTAINER_FRAMES or 13 do
+        local f = _G["ContainerFrame" .. i]
+        if f and f:IsShown() then f:Hide() end
+    end
+end
+
+if hooksecurefunc then
+    hooksecurefunc("OpenAllBags", function(frame)
+        if not AM.forceBlizz then
+            HideDefaultBags()
+            if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
+                if AM.BankUI then AM.BankUI:Show() end
+            else
+                if AM.BagUI then AM.BagUI:Show() end
             end
-            return 
         end
-        if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
-    end
-    AM.originalOpenAllBags = OpenAllBags
-    OpenAllBags = function()
-        if AM.forceBlizz then AM.originalOpenAllBags() return end
-        AM.BagUI:Show()
-    end
-    AM.originalCloseAllBags = CloseAllBags
-    CloseAllBags = function()
-        if AM.forceBlizz then 
-            AM.originalCloseAllBags() 
+    end)
+    
+    hooksecurefunc("CloseAllBags", function(frame)
+        if not AM.forceBlizz then
+            if AM.BagUI and AM.BagUI:IsShown() then AM.BagUI:Hide() end
+            if AM.BankUI and AM.BankUI:IsShown() then AM.BankUI:Hide() end
             AM.forceBlizz = false
-            return 
         end
-        AM.BagUI:Hide()
-    end
-    AM.originalToggleBackpack = ToggleBackpack
-    ToggleBackpack = function()
-        if AM.forceBlizz then 
-            AM.originalToggleBackpack() 
+    end)
+    
+    hooksecurefunc("ToggleAllBags", function()
+        if not AM.forceBlizz then
+            HideDefaultBags()
+            if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
+                if AM.BankUI:IsShown() then AM.BankUI:Hide() else AM.BankUI:Show() end
+            else
+                if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
+            end
+        else
             if not AreDefaultBagsOpen() then
                 AM.forceBlizz = false
             end
-            return 
         end
-        ToggleAllBags()
-    end
-    AM.originalToggleBag = ToggleBag
-    ToggleBag = function(id)
-        if AM.forceBlizz then 
-            AM.originalToggleBag(id)
+    end)
+    
+    hooksecurefunc("ToggleBackpack", function()
+        if not AM.forceBlizz then
+            HideDefaultBags()
+            if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
+                if AM.BankUI:IsShown() then AM.BankUI:Hide() else AM.BankUI:Show() end
+            else
+                if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
+            end
+        else
             if not AreDefaultBagsOpen() then
                 AM.forceBlizz = false
             end
-            return 
         end
-        ToggleAllBags()
-    end
+    end)
+    
+    hooksecurefunc("ToggleBag", function(id)
+        if not AM.forceBlizz then
+            HideDefaultBags()
+            if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
+                if AM.BankUI:IsShown() then AM.BankUI:Hide() else AM.BankUI:Show() end
+            else
+                if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
+            end
+        else
+            if not AreDefaultBagsOpen() then
+                AM.forceBlizz = false
+            end
+        end
+    end)
 end
 
 -- Hooks for Bank
@@ -1193,9 +1372,14 @@ bankEventFrame:RegisterEvent("BANKFRAME_OPENED")
 bankEventFrame:RegisterEvent("BANKFRAME_CLOSED")
 bankEventFrame:SetScript("OnEvent", function(self, event)
     if event == "BANKFRAME_OPENED" then
-        AM.BankUI:Show()
-        AM.BankUI:Update()
+        if AM.BankUI then
+            AM.BankUI:Show()
+            AM.BankUI:Update()
+        end
     elseif event == "BANKFRAME_CLOSED" then
-        AM.BankUI:Hide()
+        if AM.BankUI then
+            AM.BankUI:Hide()
+        end
     end
 end)
+

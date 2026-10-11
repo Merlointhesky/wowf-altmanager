@@ -3,8 +3,11 @@ local addonName, AM = ...
 AM.UI = {}
 
 local function FormatGold(money)
+    money = tonumber(money) or 0
     if C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString then
         return C_CurrencyInfo.GetCoinTextureString(money)
+    elseif GetCoinTextureString then
+        return GetCoinTextureString(money)
     end
     
     local gold = math.floor(money / 10000)
@@ -12,9 +15,15 @@ local function FormatGold(money)
     local copper = money % 100
     
     local str = ""
-    if gold > 0 then str = str .. gold .. "g " end
-    if silver > 0 then str = str .. silver .. "s " end
-    str = str .. copper .. "c"
+    if gold > 0 then
+        str = str .. gold .. " |TInterface\\MoneyFrame\\UI-GoldIcon:12:12:2:0|t "
+    end
+    if silver > 0 then
+        str = str .. silver .. " |TInterface\\MoneyFrame\\UI-SilverIcon:12:12:2:0|t "
+    end
+    if copper > 0 or money == 0 then
+        str = str .. copper .. " |TInterface\\MoneyFrame\\UI-CopperIcon:12:12:2:0|t"
+    end
     
     return str
 end
@@ -177,6 +186,11 @@ function AM.UI:ClearViewer()
     end
     if AM.UI.recipeRows then
         for _, row in ipairs(AM.UI.recipeRows) do
+            row:Hide()
+        end
+    end
+    if AM.UI.auctionRows then
+        for _, row in ipairs(AM.UI.auctionRows) do
             row:Hide()
         end
     end
@@ -439,10 +453,12 @@ function AM.UI:ShowRecipes(charName, profName)
             end
         end
         
-        if canCraft then
-            row.checkIcon:Show()
-        else
-            row.checkIcon:Hide()
+        if row.checkIcon then
+            if canCraft then
+                row.checkIcon:Show()
+            else
+                row.checkIcon:Hide()
+            end
         end
         
         row:SetPoint("TOPLEFT", 0, -(index - 1) * rowHeight)
@@ -531,8 +547,16 @@ end
 function AM.UI:ShowAuctions(charName)
     local viewer = AM.UI.ItemViewer
     viewer:Show()
+    viewer.currentChar = charName
     if viewer.sortBtn then viewer.sortBtn:Hide() end
     viewer.title:SetText(charName .. "'s Auctions")
+    
+    local myName = AM.DB:GetFullPlayerName()
+    if (charName == myName or charName == UnitName("player")) then
+        if (AuctionFrame and AuctionFrame:IsShown()) or (GetNumAuctionItems and GetNumAuctionItems("owner") > 0) then
+            AM.DB:UpdateAuctions()
+        end
+    end
     
     local ruleset = AM.DB:GetRuleset()
     local faction = AM.DB:GetFaction()
@@ -540,8 +564,8 @@ function AM.UI:ShowAuctions(charName)
     local auctions = charData.auctions or {}
     
     AM.UI:ClearViewer()
-    if not AM.UI.recipeRows then AM.UI.recipeRows = {} end
-    local recipeRows = AM.UI.recipeRows
+    if not AM.UI.auctionRows then AM.UI.auctionRows = {} end
+    local auctionRows = AM.UI.auctionRows
     
     local rowHeight = 30
     local index = 1
@@ -552,28 +576,19 @@ function AM.UI:ShowAuctions(charName)
         return timeA < timeB
     end)
     
-    local function FormatTimeLeft(expires)
-        local diff = expires - time()
-        if diff <= 0 then return "|cFF00FF00Expired/Sold|r" end
-        if diff < 3600 then return string.format("%dm", math.floor(diff/60)) end
-        if diff < 86400 then return string.format("%dh %dm", math.floor(diff/3600), math.floor((diff%3600)/60)) end
-        return string.format("%dd %dh", math.floor(diff/86400), math.floor((diff%86400)/3600))
-    end
-    
-    local function FormatSmallGold(money)
-        if money == 0 then return "0c" end
-        local g = math.floor(money / 10000)
-        local s = math.floor((money % 10000) / 100)
-        local c = money % 100
-        local str = ""
-        if g > 0 then str = str .. g .. "g" end
-        if s > 0 then str = str .. s .. "s" end
-        if c > 0 and g == 0 then str = str .. c .. "c" end
-        return str
+    local function FormatTimeLeft(expires, status)
+        if status == 1 then
+            return "|cFF00FF00Sold|r"
+        end
+        local diff = (expires or 0) - time()
+        if diff <= 60 then return "|cFF00FF00Expired / Sold|r" end
+        if diff < 3600 then return "Expires in: " .. string.format("%dm", math.floor(diff/60)) end
+        if diff < 86400 then return "Expires in: " .. string.format("%dh %dm", math.floor(diff/3600), math.floor((diff%3600)/60)) end
+        return "Expires in: " .. string.format("%dd %dh", math.floor(diff/86400), math.floor((diff%86400)/3600))
     end
     
     for _, auc in ipairs(auctions) do
-        local row = recipeRows[index]
+        local row = auctionRows[index]
         if not row then
             row = CreateFrame("Button", nil, viewer.scrollChild)
             row:SetSize(viewer:GetWidth() - 20, rowHeight)
@@ -585,11 +600,12 @@ function AM.UI:ShowAuctions(charName)
             
             row.nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
             row.nameText:SetPoint("LEFT", row.icon, "RIGHT", 5, 5)
-            row.nameText:SetPoint("RIGHT", -120, 5)
+            row.nameText:SetPoint("RIGHT", -150, 5)
             row.nameText:SetJustifyH("LEFT")
             
             row.timeText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             row.timeText:SetPoint("LEFT", row.icon, "RIGHT", 5, -8)
+            row.timeText:SetPoint("RIGHT", -150, -8)
             row.timeText:SetJustifyH("LEFT")
             
             row.priceText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -602,40 +618,127 @@ function AM.UI:ShowAuctions(charName)
             row.cutText:SetTextColor(0.5, 1, 0.5)
             
             row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
-            table.insert(recipeRows, row)
+            table.insert(auctionRows, row)
         end
         
-        row.link = auc.link
+        local itemID = auc.itemID
+        local link = auc.link
+        local itemName = auc.name
+        local tex = auc.icon
         
-        local tex = "Interface\\Icons\\INV_Misc_QuestionMark"
-        local itemName = "Unknown Item"
-        if auc.link then
-            if C_Item and C_Item.GetItemInfo then
-                local n, _, _, _, _, _, _, _, _, t = C_Item.GetItemInfo(auc.link)
-                if n then itemName = n end
-                if t then tex = t end
-            else
-                local n, _, _, _, _, _, _, _, _, t = GetItemInfo(auc.link)
-                if n then itemName = n end
-                if t then tex = t end
+        if not itemID and link then
+            if type(link) == "number" then
+                itemID = link
+            elseif type(link) == "string" then
+                local foundID = string.match(link, "item:(%d+)")
+                if foundID then itemID = tonumber(foundID) end
             end
-            itemName = auc.link
         end
+        
+        -- If itemName is missing or Unknown, check link for item name
+        if (not itemName or itemName == "" or itemName == "Unknown Item") and link and link ~= "Unknown Item" then
+            if string.find(tostring(link), "|h%[(.-)%]|h") then
+                itemName = string.match(tostring(link), "|h%[(.-)%]|h")
+            elseif not string.find(tostring(link), "item:") then
+                itemName = link
+            end
+        end
+        
+        -- If itemID is known, query item details
+        if itemID then
+            if C_Item and C_Item.RequestLoadItemDataByID then
+                C_Item.RequestLoadItemDataByID(itemID)
+            end
+            if not tex or tex == "Interface\\Icons\\INV_Misc_QuestionMark" then
+                if C_Item and C_Item.GetItemInfoInstant then
+                    local _, _, _, _, icon = C_Item.GetItemInfoInstant(itemID)
+                    if icon then tex = icon end
+                elseif GetItemIcon then
+                    local icon = GetItemIcon(itemID)
+                    if icon then tex = icon end
+                end
+            end
+            if not itemName or itemName == "" or itemName == "Unknown Item" then
+                if C_Item and C_Item.GetItemInfo then
+                    local n = C_Item.GetItemInfo(itemID)
+                    if n then itemName = n end
+                elseif GetItemInfo then
+                    local n = GetItemInfo(itemID)
+                    if n then itemName = n end
+                end
+            end
+        end
+        
+        local query = link or itemID or itemName
+        if query and (not itemName or itemName == "" or itemName == "Unknown Item" or not tex or tex == "Interface\\Icons\\INV_Misc_QuestionMark") then
+            local n, l, q, _, _, _, _, _, _, t = nil
+            if C_Item and C_Item.GetItemInfo then
+                n, l, q, _, _, _, _, _, _, t = C_Item.GetItemInfo(query)
+            elseif GetItemInfo then
+                n, l, q, _, _, _, _, _, _, t = GetItemInfo(query)
+            end
+            if n and (not itemName or itemName == "Unknown Item" or itemName == "") then itemName = n end
+            if l and (not link or link == "Unknown Item") then link = l end
+            if t and (not tex or tex == "Interface\\Icons\\INV_Misc_QuestionMark") then tex = t end
+            if l and not itemID then
+                local foundID = string.match(l, "item:(%d+)")
+                if foundID then itemID = tonumber(foundID) end
+            end
+        end
+        
+        -- Healing in-memory object so database recovers
+        if itemName and itemName ~= "Unknown Item" and itemName ~= "" then
+            auc.name = itemName
+        end
+        if itemID and not auc.itemID then
+            auc.itemID = itemID
+        end
+        if link and link ~= "Unknown Item" and (not auc.link or auc.link == "Unknown Item") then
+            auc.link = link
+        end
+        if tex and tex ~= "Interface\\Icons\\INV_Misc_QuestionMark" and not auc.icon then
+            auc.icon = tex
+        end
+        
+        if not tex then
+            tex = "Interface\\Icons\\INV_Misc_QuestionMark"
+        end
+        
+        if not itemName or itemName == "" then
+            if link and string.find(tostring(link), "|h") then
+                itemName = link
+            elseif link and link ~= "Unknown Item" and not string.find(tostring(link), "item:") then
+                itemName = link
+            elseif itemID then
+                itemName = "Item #" .. itemID
+            else
+                itemName = "Unknown Item"
+            end
+        elseif link and string.find(tostring(link), "|h") then
+            itemName = link
+        end
+        
+        row.link = link
+        row.itemID = itemID
         
         row.icon:SetTexture(tex)
         row.nameText:SetText(itemName .. (auc.count and auc.count > 1 and (" x" .. auc.count) or ""))
         
-        row.timeText:SetText("Expires in: " .. FormatTimeLeft(auc.expires))
-        row.priceText:SetText(FormatSmallGold(auc.buyout))
-        row.cutText:SetText("Net: " .. FormatSmallGold(math.floor(auc.buyout * 0.95)))
+        row.timeText:SetText(FormatTimeLeft(auc.expires, auc.status))
+        row.priceText:SetText(FormatGold(auc.buyout or 0))
+        row.cutText:SetText("Net: " .. FormatGold(math.floor((auc.buyout or 0) * 0.95)))
         
         row:SetPoint("TOPLEFT", 0, -(index - 1) * rowHeight)
         row:Show()
         
         row:SetScript("OnEnter", function(self)
-            if self.link then
+            if self.link and string.find(tostring(self.link), "|h") then
                 GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
                 GameTooltip:SetHyperlink(self.link)
+                GameTooltip:Show()
+            elseif self.itemID then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetHyperlink("item:" .. self.itemID)
                 GameTooltip:Show()
             end
         end)
@@ -723,6 +826,20 @@ local function CreateCharacterRow(index)
     row.mailBtn:SetNormalTexture("Interface\\Minimap\\Tracking\\Mailbox")
     row.mailBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
     row.mailBtn:SetScript("OnClick", function() AM.UI:ShowItems(row.charName, "Mail") end)
+    row.mailBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        local ruleset = AM.DB:GetRuleset()
+        local faction = AM.DB:GetFaction()
+        local charData = AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][row.charName]
+        if charData and charData.hasNewMail then
+            GameTooltip:AddLine("Mailbox (Unread Mail)", 1, 0.82, 0)
+        else
+            GameTooltip:AddLine("Mailbox", 1, 1, 1)
+        end
+        GameTooltip:AddLine("Click to view stored mail items", 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+    end)
+    row.mailBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
     
     -- Glow for new/cached mail
     row.mailGlow = row.mailBtn:CreateTexture(nil, "OVERLAY")
@@ -742,7 +859,11 @@ local function CreateCharacterRow(index)
     row.aucBtn:SetScript("OnClick", function() AM.UI:ShowAuctions(row.charName) end)
     row.aucBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("View Auctions")
+        local ruleset = AM.DB:GetRuleset()
+        local faction = AM.DB:GetFaction()
+        local charData = AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][row.charName]
+        local count = (charData and charData.auctions) and #charData.auctions or 0
+        GameTooltip:AddLine("View Auctions (" .. count .. " active)")
         GameTooltip:Show()
     end)
     row.aucBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
@@ -892,24 +1013,43 @@ function AM.UI:RefreshData()
             row.aucBtn:Hide()
         end
         
-        -- Check if mail exists to show the button
+        -- Check if mail exists to show the button, and if unread mail exists for the yellow glow
         local hasMail = false
         local hasNewMail = false
+        
+        if charData.hasNewMail then
+            hasNewMail = true
+        end
+        
         if charData.mail then
             for k, v in pairs(charData.mail) do
-                if v > 0 then hasMail = true; hasNewMail = true; break end
+                if v > 0 then
+                    hasMail = true
+                    break
+                end
             end
+        end
+        
+        if charData.mailCount and charData.mailCount > 0 then
+            hasMail = true
         end
         
         -- Check for expired auctions
         if charData.auctions then
             for _, auc in ipairs(charData.auctions) do
                 if auc.expires and time() >= (auc.expires + 3600) then
-                    hasMail = true
-                    hasNewMail = true
-                    break
+                    local deliveryTime = auc.expires + 3600
+                    if not charData.lastMailCheck or charData.lastMailCheck < deliveryTime then
+                        hasMail = true
+                        hasNewMail = true
+                        break
+                    end
                 end
             end
+        end
+        
+        if hasNewMail then
+            hasMail = true
         end
         
         if hasMail then
