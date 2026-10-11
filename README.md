@@ -1,4 +1,4 @@
-# Alt Manager
+# Forever Alt Manager
 
 **Version:** 1.0.0  
 **WoW Version:** WoW Forever Beta (v1.60.1)  
