@@ -16,10 +16,12 @@ local function AddItemDataToTooltip(tooltip, itemID)
     for charName, charData in pairs(AltManagerDB[ruleset][faction]) do
         if charName ~= myName then
             local inBags = charData.bags and charData.bags[itemID] or 0
+            local inProf = charData.profession and charData.profession[itemID] or 0
+            local inQuiv = charData.quiver and charData.quiver[itemID] or 0
             local inBank = charData.bank and charData.bank[itemID] or 0
             local inMail = charData.mail and charData.mail[itemID] or 0
             
-            local total = inBags + inBank + inMail
+            local total = inBags + inProf + inQuiv + inBank + inMail
             if total > 0 then
                 if not addedHeader then
                     tooltip:AddLine(" ")
@@ -29,6 +31,8 @@ local function AddItemDataToTooltip(tooltip, itemID)
                 
                 local details = {}
                 if inBags > 0 then table.insert(details, "Bags: " .. inBags) end
+                if inProf > 0 then table.insert(details, "Profession: " .. inProf) end
+                if inQuiv > 0 then table.insert(details, "Quiver: " .. inQuiv) end
                 if inBank > 0 then table.insert(details, "Bank: " .. inBank) end
                 if inMail > 0 then table.insert(details, "Mail: " .. inMail) end
                 

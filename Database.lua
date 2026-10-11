@@ -139,6 +139,35 @@ function AM.DB:Init()
                     for _, oldName in ipairs(toRemove) do
                         chars[oldName] = nil
                     end
+                    
+                    -- Cleanup duplicate profession bag items in regular bags table
+                    for charName, charData in pairs(chars) do
+                        if type(charData) == "table" and charData.profession then
+                            if not charData.profCapacity or charData.profCapacity == 0 then
+                                local pCount = 0
+                                for _ in pairs(charData.profession) do pCount = pCount + 1 end
+                                charData.profCapacity = math.max(pCount, 4)
+                            end
+                            if charData.bags and not charData.profMigrated then
+                                charData.profMigrated = true
+                                for itemID, pCount in pairs(charData.profession) do
+                                    if charData.bags[itemID] then
+                                        charData.bags[itemID] = charData.bags[itemID] - pCount
+                                        if charData.bags[itemID] <= 0 then
+                                            charData.bags[itemID] = nil
+                                        end
+                                    end
+                                end
+                                if charData.bagCapacity and charData.profCapacity and charData.bagCapacity > charData.profCapacity then
+                                    if charData.bagCapacity == 56 and charData.profCapacity == 4 then
+                                        charData.bagCapacity = 52
+                                    elseif charData.bagCapacity > 16 then
+                                        charData.bagCapacity = charData.bagCapacity - charData.profCapacity
+                                    end
+                                end
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -256,6 +285,9 @@ function AM.DB:SetAutoRepairEnabled(val)
 end
 
 function AM.DB:GetCurrentCharacterDB()
+    if not self.data then
+        self:Init()
+    end
     local ruleset = self:GetRuleset()
     local faction = self:GetFaction()
     local name = self:GetFullPlayerName()
@@ -337,29 +369,81 @@ function AM.DB:IsQuiver(bag)
     return false
 end
 
+function AM.DB:IsProfessionBag(bag)
+    if bag == 5 or (Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag and bag == Enum.BagIndex.ReagentBag) then
+        return true
+    end
+    if bag == 0 or bag == -1 or bag == -2 then return false end
+    
+    if C_Container and C_Container.GetContainerNumFreeSlots then
+        local free, family = C_Container.GetContainerNumFreeSlots(bag)
+        if family and family > 2 then
+            return true
+        end
+    elseif GetContainerNumFreeSlots then
+        local free, family = GetContainerNumFreeSlots(bag)
+        if family and family > 2 then
+            return true
+        end
+    end
+    
+    local invID = ContainerIDToInventoryID and ContainerIDToInventoryID(bag)
+    if invID then
+        local itemID = GetInventoryItemID("player", invID)
+        if itemID then
+            local _, _, _, _, _, _, itemSubType
+            if C_Item and C_Item.GetItemInfo then
+                _, _, _, _, _, _, itemSubType = C_Item.GetItemInfo(itemID)
+            else
+                _, _, _, _, _, _, itemSubType = GetItemInfo(itemID)
+            end
+            if itemSubType and (
+                string.find(itemSubType, "Mining") or 
+                string.find(itemSubType, "Herb") or 
+                string.find(itemSubType, "Engineering") or 
+                string.find(itemSubType, "Enchanting") or 
+                string.find(itemSubType, "Gem") or 
+                string.find(itemSubType, "Leatherworking") or 
+                string.find(itemSubType, "Inscription") or 
+                string.find(itemSubType, "Soul")
+            ) then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
 function AM.DB:UpdateBags()
     local charDB = self:GetCurrentCharacterDB()
     charDB.bags = {}
+    charDB.quiver = {}
+    charDB.profession = {}
+    charDB.bagCapacity = 0
+    charDB.quiverCapacity = 0
+    charDB.profCapacity = 0
     
     local numBags = NUM_BAG_SLOTS or 4
-    local reagentBag = Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag
+    local reagentBag = (Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5
     
     local bagsToScan = {0}
     for i = 1, numBags do table.insert(bagsToScan, i) end
     if reagentBag then table.insert(bagsToScan, reagentBag) end
     
-    charDB.quiver = {}
-    charDB.quiverCapacity = 0
-    charDB.bagCapacity = 0
     for _, bag in ipairs(bagsToScan) do
         local isQuiv = self:IsQuiver(bag)
+        local isProf = self:IsProfessionBag(bag)
         local numSlots = C_Container.GetContainerNumSlots(bag)
-        if numSlots then
+        if numSlots and numSlots > 0 then
             if isQuiv then
                 charDB.quiverCapacity = charDB.quiverCapacity + numSlots
+            elseif isProf then
+                charDB.profCapacity = charDB.profCapacity + numSlots
             else
                 charDB.bagCapacity = charDB.bagCapacity + numSlots
             end
+            
             for slot = 1, numSlots do
                 local info = C_Container.GetContainerItemInfo(bag, slot)
                 if info and info.hyperlink then
@@ -370,26 +454,14 @@ function AM.DB:UpdateBags()
                     if isQuiv then
                         if not charDB.quiver[itemID] then charDB.quiver[itemID] = 0 end
                         charDB.quiver[itemID] = charDB.quiver[itemID] + info.stackCount
+                    elseif isProf then
+                        if not charDB.profession[itemID] then charDB.profession[itemID] = 0 end
+                        charDB.profession[itemID] = charDB.profession[itemID] + info.stackCount
                     else
                         if not charDB.bags[itemID] then charDB.bags[itemID] = 0 end
                         charDB.bags[itemID] = charDB.bags[itemID] + info.stackCount
                     end
                 end
-            end
-        end
-    end
-    
-    -- Profession Bag (Hardcoded Bag 5)
-    charDB.profession = {}
-    local profNumSlots = C_Container.GetContainerNumSlots(5)
-    charDB.profCapacity = profNumSlots or 0
-    if profNumSlots then
-        for slot = 1, profNumSlots do
-            local info = C_Container.GetContainerItemInfo(5, slot)
-            if info and info.hyperlink then
-                local itemID = info.itemID
-                if not charDB.profession[itemID] then charDB.profession[itemID] = 0 end
-                charDB.profession[itemID] = charDB.profession[itemID] + info.stackCount
             end
         end
     end

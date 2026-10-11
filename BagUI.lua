@@ -606,59 +606,124 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         -- Gather data
         if not self.selectedCharacter then
             local quiverItems = {}
+            local profItems = {}
+            local profConfig = nil
             for _, sec in ipairs(self.liveSections) do
-                local secItems = {}
-                local bagsToScan = sec.bags
-                if sec.title == "Bank" then
-                    bagsToScan = AM:GetLiveBankBags()
+                if sec.title == "Profession" then
+                    profConfig = sec
                 end
-                for _, bag in ipairs(bagsToScan) do
-                    if not self.bagDummies[bag] then
-                        local dummy = CreateFrame("Frame", nil, self)
-                        dummy:SetID(bag)
-                        dummy:SetAllPoints()
-                        dummy:SetFrameLevel(self:GetFrameLevel() + 5)
-                        self.bagDummies[bag] = dummy
+            end
+            
+            for _, sec in ipairs(self.liveSections) do
+                if sec.title ~= "Profession" then
+                    local secItems = {}
+                    local bagsToScan = sec.bags
+                    if sec.title == "Bank" then
+                        bagsToScan = AM:GetLiveBankBags()
                     end
-                    local isQuiv = AM.DB:IsQuiver(bag)
-                    local targetList = isQuiv and quiverItems or secItems
-                    
-                    local slots = C_Container.GetContainerNumSlots(bag)
-                    if slots then
-                        for slot = 1, slots do
-                            local itemInfo = C_Container.GetContainerItemInfo(bag, slot)
-                            local itemLink = C_Container.GetContainerItemLink(bag, slot)
-                            
-                            local name, rarity, value = "", 0, 0
-                            if itemLink then
-                                local itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice
-                                if C_Item and C_Item.GetItemInfo then
-                                    itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice = C_Item.GetItemInfo(itemLink)
-                                else
-                                    itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(itemLink)
+                    for _, bag in ipairs(bagsToScan) do
+                        if not self.bagDummies[bag] then
+                            local dummy = CreateFrame("Frame", nil, self)
+                            dummy:SetID(bag)
+                            dummy:SetAllPoints()
+                            dummy:SetFrameLevel(self:GetFrameLevel() + 5)
+                            self.bagDummies[bag] = dummy
+                        end
+                        local isQuiv = AM.DB:IsQuiver(bag)
+                        local isProf = AM.DB:IsProfessionBag(bag)
+                        local targetList = secItems
+                        if isQuiv then
+                            targetList = quiverItems
+                        elseif isProf then
+                            targetList = profItems
+                        end
+                        
+                        local slots = C_Container.GetContainerNumSlots(bag)
+                        if slots then
+                            for slot = 1, slots do
+                                local itemInfo = C_Container.GetContainerItemInfo(bag, slot)
+                                local itemLink = C_Container.GetContainerItemLink(bag, slot)
+                                
+                                local name, rarity, value = "", 0, 0
+                                if itemLink then
+                                    local itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice
+                                    if C_Item and C_Item.GetItemInfo then
+                                        itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice = C_Item.GetItemInfo(itemLink)
+                                    else
+                                        itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(itemLink)
+                                    end
+                                    name = itemName or ""
+                                    rarity = itemQuality or 0
+                                    value = sellPrice or 0
                                 end
-                                name = itemName or ""
-                                rarity = itemQuality or 0
-                                value = sellPrice or 0
+                                
+                                table.insert(targetList, {
+                                    bag = bag,
+                                    slot = slot,
+                                    info = itemInfo,
+                                    link = itemLink,
+                                    name = name,
+                                    rarity = rarity,
+                                    value = value,
+                                    isEmpty = (itemLink == nil),
+                                    isLive = true
+                                })
                             end
-                            
-                            table.insert(targetList, {
-                                bag = bag,
-                                slot = slot,
-                                info = itemInfo,
-                                link = itemLink,
-                                name = name,
-                                rarity = rarity,
-                                value = value,
-                                isEmpty = (itemLink == nil),
-                                isLive = true
-                            })
                         end
                     end
+                    if #secItems > 0 or sec.alwaysShow then
+                        table.insert(allSectionsData, { config = sec, items = secItems })
+                    end
                 end
-                if #secItems > 0 or sec.alwaysShow then
-                    table.insert(allSectionsData, { config = sec, items = secItems })
+            end
+            
+            -- Also scan live reagent bag (bag 5) if present
+            local reagentBag = (Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5
+            if reagentBag then
+                if not self.bagDummies[reagentBag] then
+                    local dummy = CreateFrame("Frame", nil, self)
+                    dummy:SetID(reagentBag)
+                    dummy:SetAllPoints()
+                    dummy:SetFrameLevel(self:GetFrameLevel() + 5)
+                    self.bagDummies[reagentBag] = dummy
                 end
+                local reagentSlots = C_Container.GetContainerNumSlots(reagentBag)
+                if reagentSlots and reagentSlots > 0 then
+                    for slot = 1, reagentSlots do
+                        local itemInfo = C_Container.GetContainerItemInfo(reagentBag, slot)
+                        local itemLink = C_Container.GetContainerItemLink(reagentBag, slot)
+                        local name, rarity, value = "", 0, 0
+                        if itemLink then
+                            local itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice
+                            if C_Item and C_Item.GetItemInfo then
+                                itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice = C_Item.GetItemInfo(itemLink)
+                            else
+                                itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(itemLink)
+                            end
+                            name = itemName or ""
+                            rarity = itemQuality or 0
+                            value = sellPrice or 0
+                        end
+                        table.insert(profItems, {
+                            bag = reagentBag,
+                            slot = slot,
+                            info = itemInfo,
+                            link = itemLink,
+                            name = name,
+                            rarity = rarity,
+                            value = value,
+                            isEmpty = (itemLink == nil),
+                            isLive = true
+                        })
+                    end
+                end
+            end
+            
+            if #profItems > 0 then
+                table.insert(allSectionsData, {
+                    config = profConfig or { title = "Profession", r = 0.4, g = 0.85, b = 0.4, a = 0.3 },
+                    items = profItems
+                })
             end
             
             if #quiverItems > 0 then
@@ -673,6 +738,19 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             local charDB = AM.DB.data[ruleset] and AM.DB.data[ruleset][faction] and AM.DB.data[ruleset][faction][self.selectedCharacter]
             
             if charDB then
+                -- Runtime deduplication defense for cached alts
+                if charDB.profession and charDB.bags and not charDB._profDeduplicated then
+                    charDB._profDeduplicated = true
+                    for itemID, pCount in pairs(charDB.profession) do
+                        if charDB.bags[itemID] then
+                            charDB.bags[itemID] = charDB.bags[itemID] - pCount
+                            if charDB.bags[itemID] <= 0 then
+                                charDB.bags[itemID] = nil
+                            end
+                        end
+                    end
+                end
+                
                 local typesToRead = {}
                 if storageType == "combined" then
                     table.insert(typesToRead, "bank")
@@ -728,8 +806,13 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     
                     local capacity = 0
                     if sType == "bank" and charDB.bankCapacity then capacity = charDB.bankCapacity
-                    elseif sType == "bags" and charDB.bagCapacity then capacity = charDB.bagCapacity
-                    elseif sType == "profession" and charDB.profCapacity then capacity = charDB.profCapacity
+                    elseif sType == "bags" and charDB.bagCapacity then
+                        capacity = charDB.bagCapacity
+                        if capacity == 56 and (charDB.profCapacity == 4 or charDB.profession) then
+                            capacity = 52
+                        end
+                    elseif sType == "profession" then
+                        capacity = charDB.profCapacity or 4
                     elseif sType == "quiver" and charDB.quiverCapacity then capacity = charDB.quiverCapacity
                     elseif sType == "bankQuiver" and charDB.bankQuiverCapacity then capacity = charDB.bankQuiverCapacity
                     end
