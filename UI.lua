@@ -1079,6 +1079,8 @@ end
 
 SLASH_ALTMANAGER1 = "/altmanager"
 SLASH_ALTMANAGER2 = "/am"
+SLASH_ALTMANAGER3 = "/foreveraltmanager"
+SLASH_ALTMANAGER4 = "/fam"
 SlashCmdList["ALTMANAGER"] = function(msg)
     AM.UI:ToggleMainFrame()
 end
