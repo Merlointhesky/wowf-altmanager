@@ -504,6 +504,62 @@ function AM.DB:UpdateBank()
     end
 end
 
+local function ExtractAuctionItemName(msg)
+    if not msg then return nil end
+    local link = string.match(msg, "|Hitem:.-|h%[(.-)%]|h")
+    if link then return link end
+    local bracketed = string.match(msg, "%[(.-)%]")
+    if bracketed then return bracketed end
+    local colonPart = string.match(msg, ":%s*([^%.%!]+)")
+    if colonPart then return colonPart end
+    local soldPart = string.match(msg, "[Aa]uction of (.+) sold")
+    if soldPart then return soldPart end
+    return nil
+end
+
+function AM.DB:RemoveAuction(identifier)
+    if not identifier then return false end
+    local charDB = self:GetCurrentCharacterDB()
+    if not charDB or not charDB.auctions or #charDB.auctions == 0 then return false end
+    
+    local targetIndex = nil
+    local matchStr = tostring(identifier):lower()
+    matchStr = string.gsub(matchStr, "[%[%]]", "")
+    matchStr = string.match(matchStr, "^%s*(.-)%s*$") or matchStr
+    
+    for i, auc in ipairs(charDB.auctions) do
+        local aucName = auc.name and tostring(auc.name):lower()
+        if aucName then
+            aucName = string.gsub(aucName, "[%[%]]", "")
+            aucName = string.match(aucName, "^%s*(.-)%s*$") or aucName
+        end
+        
+        if (type(identifier) == "number" and auc.itemID == identifier)
+           or (aucName and (aucName == matchStr or string.find(matchStr, aucName, 1, true) or string.find(aucName, matchStr, 1, true)))
+           or (auc.link and string.find(auc.link:lower(), matchStr, 1, true)) then
+            targetIndex = i
+            break
+        end
+    end
+    
+    if targetIndex then
+        local removed = table.remove(charDB.auctions, targetIndex)
+        AM:DebugLog("AM.DB: Removed completed/sold auction: " .. tostring(removed.name or removed.itemID))
+        
+        if AM.UI and AM.UI.RefreshData then
+            AM.UI:RefreshData()
+        end
+        if AM.UI and AM.UI.ItemViewer and AM.UI.ItemViewer:IsShown() then
+            local charName = UnitName("player")
+            if AM.UI.ItemViewer.title and AM.UI.ItemViewer.title:GetText() == (charName .. "'s Auctions") then
+                AM.UI:ShowAuctions(charName)
+            end
+        end
+        return true
+    end
+    return false
+end
+
 function AM.DB:UpdateMail()
     local charDB = self:GetCurrentCharacterDB()
     charDB.mail = {}
@@ -521,9 +577,26 @@ function AM.DB:UpdateMail()
     
     local hasUnread = false
     for i = 1, numItems do
-        local _, _, _, _, _, _, _, _, wasRead = GetInboxHeaderInfo(i)
+        local packageIcon, stationeryIcon, sender, subject, money, CODAmount, daysLeft, itemCount, wasRead = GetInboxHeaderInfo(i)
         if not wasRead or wasRead == 0 then
             hasUnread = true
+        end
+        
+        -- Detect completed or returned auctions from mail notifications
+        if subject then
+            local isAHMail = (sender and string.find(string.lower(sender), "auction"))
+                or (AUCTION_SOLD_MAIL_SUBJECT and string.find(subject, "Auction successful"))
+                or string.find(subject, "Auction sold")
+                or string.find(subject, "Auction expired")
+                or string.find(subject, "Auction cancelled")
+                or string.find(subject, "Auction removed")
+                or string.find(subject, "Auction successful")
+            if isAHMail then
+                local itemName = ExtractAuctionItemName(subject)
+                if itemName then
+                    AM.DB:RemoveAuction(itemName)
+                end
+            end
         end
         
         for attachIndex = 1, ATTACHMENTS_MAX_RECEIVE or 12 do
@@ -552,10 +625,9 @@ end
 
 function AM.DB:UpdateProfessions()
     local charDB = self:GetCurrentCharacterDB()
-    if not charDB.professions then charDB.professions = {} end
-    
     if not GetProfessions then return end
-    
+
+    -- Gather current professions from the game
     local p1, p2, arch, fish, cook, fa = GetProfessions()
     local profList = {
         { index = p1 },
@@ -563,49 +635,55 @@ function AM.DB:UpdateProfessions()
         { index = arch, fallbackName = "Archaeology", fallbackIcon = "Interface\\Icons\\trade_archaeology" },
         { index = fish, fallbackName = "Fishing", fallbackIcon = "Interface\\Icons\\trade_fishing" },
         { index = cook, fallbackName = "Cooking", fallbackIcon = "Interface\\Icons\\inv_misc_food_15" },
-        { index = fa, fallbackName = "First Aid", fallbackIcon = "Interface\\Icons\\spell_holy_sealofsacrifice" }
+        { index = fa,   fallbackName = "First Aid", fallbackIcon = "Interface\\Icons\\spell_holy_sealofsacrifice" },
     }
-    
-    for _, pData in pairs(profList) do
-        local profIndex = pData.index
-        if profIndex and type(profIndex) == "number" then
-            local name, texture, rank, maxRank = GetProfessionInfo(profIndex)
-            
-            -- Beta API fallback for missing data
-            if not name or name == "" then name = pData.fallbackName end
-            if not texture or texture == "" then texture = pData.fallbackIcon end
-            
-            if name and name ~= "" then
-                local found = false
-                for _, op in ipairs(charDB.professions) do
-                    if op.name == name or (pData.fallbackName and op.name == pData.fallbackName) then
-                        found = true
-                        -- Ensure name is corrected if it was wrong
-                        op.name = name
-                        if texture and texture ~= "" and (not op.texture or op.texture == "Interface\\Icons\\INV_Misc_QuestionMark") then
-                            op.texture = texture
-                        end
-                        if rank and (not op.rank or rank > op.rank) then
-                            op.rank = rank
-                        end
-                        if maxRank and (not op.maxRank or maxRank > op.maxRank) then
-                            op.maxRank = maxRank
-                        end
-                        break
-                    end
-                end
-                
-                if not found then
-                    table.insert(charDB.professions, {
-                        name = name,
-                        texture = texture,
-                        rank = rank or 1,
-                        maxRank = maxRank or 300,
-                        recipes = {}
-                    })
-                end
-            end
+
+    -- Map of currently learned professions
+    local currentProf = {}
+    for _, p in ipairs(profList) do
+        local idx = p.index
+        if idx and type(idx) == "number" then
+            local name, tex, rank, maxRank = GetProfessionInfo(idx)
+            if not name or name == "" then name = p.fallbackName end
+            if not tex or tex == "" then tex = p.fallbackIcon end
+            currentProf[name] = {
+                name = name,
+                texture = tex,
+                rank = rank or 1,
+                maxRank = maxRank or 300,
+            }
         end
+    end
+
+    -- Preserve existing recipes for professions that remain
+    local oldProf = {}
+    if charDB.professions then
+        for _, p in ipairs(charDB.professions) do
+            oldProf[p.name] = p
+        end
+    end
+
+    -- Build new list, keeping recipes for unchanged professions
+    local newProfessions = {}
+    for name, data in pairs(currentProf) do
+        local entry = oldProf[name] or {
+            name = name,
+            texture = data.texture,
+            rank = data.rank,
+            maxRank = data.maxRank,
+            recipes = {}
+        }
+        -- Update mutable fields in case they changed
+        entry.texture = data.texture
+        entry.rank = data.rank
+        entry.maxRank = data.maxRank
+        entry.recipes = entry.recipes or {}
+        table.insert(newProfessions, entry)
+    end
+
+    charDB.professions = newProfessions
+    if AM.UI and AM.UI.RefreshData then
+        AM.UI:RefreshData()
     end
 end
 
@@ -686,6 +764,9 @@ end
 
 AM.Events["PLAYER_MONEY"] = function(self)
     AM.DB:UpdateCharacterInfo()
+    if AM.UI and AM.UI.MainFrame and AM.UI.MainFrame:IsShown() and AM.UI.RefreshData then
+        AM.UI:RefreshData()
+    end
 end
 
 local pendingBagUpdate = false
@@ -789,6 +870,7 @@ end
 AM.Events["PLAYER_ENTERING_WORLD"] = function(self)
     AM.DB:UpdateCharacterInfo()
     AM.DB:UpdateProfessions()
+    AM.DB:UpdateRecipes()
     if HasNewMail then
         local charDB = AM.DB:GetCurrentCharacterDB()
         charDB.hasNewMail = (HasNewMail() and true) or false
@@ -800,6 +882,8 @@ AM.Events["TRADE_SKILL_SHOW"] = function(self)
 end
 
 AM.Events["TRADE_SKILL_LIST_UPDATE"] = function(self)
+    AM.DB:UpdateRecipes()
+    AM.DB:UpdateProfessions()
     AM.DB:UpdateRecipes()
 end
 
@@ -1599,8 +1683,26 @@ AM.Events["UI_ERROR_MESSAGE"] = function(self, arg1, arg2)
 end
 
 AM.Events["CHAT_MSG_SYSTEM"] = function(self, msg)
-    if msg and (msg == ERR_AUCTION_STARTED or string.find(msg, "Auction created") or (ERR_AUCTION_STARTED and string.find(msg, ERR_AUCTION_STARTED))) then
+    if not msg then return end
+    if msg == ERR_AUCTION_STARTED or string.find(msg, "Auction created") or (ERR_AUCTION_STARTED and string.find(msg, ERR_AUCTION_STARTED)) then
         AM.DB:OnAuctionCreated()
+        return
+    end
+    
+    local isSold = (ERR_AUCTION_SOLD_S and string.find(msg, string.gsub(ERR_AUCTION_SOLD_S, "%%s", ".-")))
+        or string.find(msg, "Auction sold")
+        or string.find(msg, "auction of .- sold")
+    local isExpired = (ERR_AUCTION_EXPIRED_S and string.find(msg, string.gsub(ERR_AUCTION_EXPIRED_S, "%%s", ".-")))
+        or string.find(msg, "Auction expired")
+    local isRemoved = (ERR_AUCTION_REMOVED_S and string.find(msg, string.gsub(ERR_AUCTION_REMOVED_S, "%%s", ".-")))
+        or string.find(msg, "Auction cancelled")
+        or string.find(msg, "Auction removed")
+        
+    if isSold or isExpired or isRemoved then
+        local itemName = ExtractAuctionItemName(msg)
+        if itemName then
+            AM.DB:RemoveAuction(itemName)
+        end
     end
 end
 
