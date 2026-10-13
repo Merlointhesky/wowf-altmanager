@@ -878,6 +878,64 @@ local function CreateCharacterRow(index)
     row.goldText:SetPoint("RIGHT", -10, 0)
     row.goldText:SetWidth(150)
     row.goldText:SetJustifyH("RIGHT")
+
+    -- Ignore Button (hide alt)
+    row.ignoreBtn = CreateFrame("Button", nil, row)
+    row.ignoreBtn:SetSize(24, 24)
+    row.ignoreBtn:SetPoint("RIGHT", row.goldText, "LEFT", -5, 0)
+    row.ignoreBtn:SetNormalTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+    row.ignoreBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
+    row.ignoreBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        local ruleset = AM.DB:GetRuleset()
+        local faction = AM.DB:GetFaction()
+        local charData = AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][row.charName]
+        if charData and charData.isIgnored then
+            GameTooltip:AddLine("Unignore Character (show again)")
+        else
+            GameTooltip:AddLine("Ignore Character (hide from list)")
+        end
+        GameTooltip:Show()
+    end)
+    row.ignoreBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
+    row.ignoreBtn:SetScript("OnClick", function(self)
+        local ruleset = AM.DB:GetRuleset()
+        local faction = AM.DB:GetFaction()
+        if AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][row.charName] then
+            local char = AltManagerDB[ruleset][faction][row.charName]
+            char.isIgnored = not char.isIgnored
+        end
+        AM.UI:RefreshData()
+    end)
+
+    -- Delete Button (remove from DB)
+    row.deleteBtn = CreateFrame("Button", nil, row)
+    row.deleteBtn:SetSize(24, 24)
+    row.deleteBtn:SetPoint("RIGHT", row.ignoreBtn, "LEFT", -5, 0)
+    row.deleteBtn:SetNormalTexture("Interface\\Icons\\INV_Misc_Horn_01")
+    row.deleteBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
+    row.deleteBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Delete Character (remove all data)")
+        GameTooltip:Show()
+    end)
+    row.deleteBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
+    row.deleteBtn:SetScript("OnClick", function(self)
+        StaticPopup_Show("AM_DELETE_CHARACTER", row.charName)
+    end)
+    if row.charName == AM.DB:GetFullPlayerName() then
+        row.deleteBtn:Hide()
+    end
+
+
+
+
+
+
+    -- Delete Button (remove from DB)
+
+
+
     
     return row
 end
@@ -921,7 +979,19 @@ function AM.UI:RefreshData()
         
         row.charName = charName
         
-        -- Apply Class Color & Icon
+        -- Hide row if ignored (except current player)
+        if charData.isIgnored then
+            if not charName:find(AM.DB:GetFullPlayerName()) then
+                row:Hide()
+            end
+        end
+        -- Hide delete button for the character currently being played
+        if charName == AM.DB:GetFullPlayerName() then
+            row.deleteBtn:Hide()
+        else
+            row.deleteBtn:Show()
+        end
+-- Apply Class Color & Icon
         local classColor = charData.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[charData.class]
         if classColor then
             row.nameText:SetText(string.format("|cff%02x%02x%02x%s|r (Lvl %d)", classColor.r*255, classColor.g*255, classColor.b*255, charName, charData.level or 0))
@@ -1069,11 +1139,58 @@ function AM.UI:RefreshData()
         row.goldText:SetText(FormatGold(money))
         totalGold = totalGold + money
         
-        row:Show()
-        index = index + 1
+        if not charData.isIgnored or charName == AM.DB:GetFullPlayerName() then
+            row:Show()
+            index = index + 1
+        end
     end
     
-    -- Update Total Wealth Footer
+    -- Confirmation dialogs for ignore and delete actions
+StaticPopupDialogs["AM_IGNORE_CHARACTER"] = {
+    text = "Ignore %s? This will hide the character from the list.",
+    button1 = "Ignore",
+    button2 = "Cancel",
+    OnAccept = function(self, data)
+        if data == AM.DB:GetFullPlayerName() then
+            UIErrorsFrame:AddMessage("You cannot ignore your own character.", 1.0, 0.0, 0.0)
+            return
+        end
+        local ruleset = AM.DB:GetRuleset()
+        local faction = AM.DB:GetFaction()
+        if AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][data] then
+            AltManagerDB[ruleset][faction][data].isIgnored = true
+        end
+        AM.UI:RefreshData()
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
+
+StaticPopupDialogs["AM_DELETE_CHARACTER"] = {
+    text = "Delete %s? This will permanently remove all saved data for this character.",
+    button1 = "Delete",
+    button2 = "Cancel",
+    OnAccept = function(self, data)
+        local myName = AM.DB:GetFullPlayerName()
+        if data == myName then
+            UIErrorsFrame:AddMessage("You cannot delete the character you are currently playing.", 1, 0, 0)
+            return
+        end
+        local ruleset = AM.DB:GetRuleset()
+        local faction = AM.DB:GetFaction()
+        if AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] then
+            AltManagerDB[ruleset][faction][data] = nil
+        end
+        AM.UI:RefreshData()
+    end,
+
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
+
+-- Update Total Wealth Footer
     AM.UI.MainFrame.totalGoldValue:SetText(FormatGold(totalGold))
 end
 
