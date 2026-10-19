@@ -1433,12 +1433,20 @@ AM.BankUI = AM:CreateInventoryWindow("AltManagerBankUI", "Bank & Bags", "combine
 
 -- Hooks for Bags (using hooksecurefunc to avoid protected frame / BankFrame taint)
 local function AreDefaultBagsOpen()
+    if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then return true end
     if ContainerFrame1 and ContainerFrame1:IsShown() then return true end
     return false
 end
 
 local function HideDefaultBags()
     if AM.forceBlizz then return end
+
+    -- Hide Blizzard's built-in Combined Backpack frame
+    if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
+        ContainerFrameCombinedBags:Hide()
+    end
+
+    -- Hide individual container frames
     for i = 1, NUM_CONTAINER_FRAMES or 13 do
         local f = _G["ContainerFrame" .. i]
         if f and f:IsShown() then f:Hide() end
@@ -1517,6 +1525,13 @@ bankEventFrame:RegisterEvent("BANKFRAME_OPENED")
 bankEventFrame:RegisterEvent("BANKFRAME_CLOSED")
 bankEventFrame:SetScript("OnEvent", function(self, event)
     if event == "BANKFRAME_OPENED" then
+        if not AM.forceBlizz then
+            -- Hide default Blizzard bank window and combined bags on interaction
+            if BankFrame and BankFrame:IsShown() then
+                BankFrame:Hide()
+            end
+            HideDefaultBags()
+        end
         if AM.BankUI then
             AM.BankUI:Show()
             AM.BankUI:Update()
