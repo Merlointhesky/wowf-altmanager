@@ -284,6 +284,42 @@ function AM.DB:SetAutoRepairEnabled(val)
     self.data[ruleset].autoRepair = val
 end
 
+function AM:IsItemStackable(itemID, info)
+    if info and info.stackCount and info.stackCount > 1 then
+        return true
+    end
+    if not itemID then return false end
+    local maxStack = 1
+    if C_Item and C_Item.GetItemMaxStackSizeByID then
+        maxStack = C_Item.GetItemMaxStackSizeByID(itemID) or 1
+    elseif C_Item and C_Item.GetItemInfo then
+        local _, _, _, _, _, _, _, stack = C_Item.GetItemInfo(itemID)
+        maxStack = stack or 1
+    elseif GetItemInfo then
+        local _, _, _, _, _, _, _, stack = GetItemInfo(itemID)
+        maxStack = stack or 1
+    end
+    return maxStack > 1
+end
+
+function AM:GetItemSeenKey(itemID, info, link)
+    if not itemID then return nil end
+    local isStackable = AM:IsItemStackable(itemID, info)
+    if isStackable then
+        return "stack:" .. itemID
+    else
+        if info and info.itemGUID and info.itemGUID ~= "" then
+            return info.itemGUID
+        elseif link then
+            local uniqueID = string.match(link, "item:%d+:[-%d]*:[-%d]*:[-%d]*:[-%d]*:[-%d]*:[-%d]*:([-%d]+)")
+            if uniqueID and uniqueID ~= "" and uniqueID ~= "0" then
+                return "item:" .. itemID .. ":" .. uniqueID
+            end
+        end
+        return "item:" .. itemID
+    end
+end
+
 function AM.DB:GetCurrentCharacterDB()
     if not self.data then
         self:Init()
@@ -310,7 +346,8 @@ function AM.DB:GetCurrentCharacterDB()
             restXP = 0,
             maxXP = 1,
             isResting = false,
-            logoutTime = 0
+            logoutTime = 0,
+            seenItems = {}
         }
     end
     
@@ -431,6 +468,7 @@ function AM.DB:UpdateBags()
     for i = 1, numBags do table.insert(bagsToScan, i) end
     if reagentBag then table.insert(bagsToScan, reagentBag) end
     
+    local activeSeenKeys = {}
     for _, bag in ipairs(bagsToScan) do
         local isQuiv = self:IsQuiver(bag)
         local isProf = self:IsProfessionBag(bag)
@@ -461,7 +499,27 @@ function AM.DB:UpdateBags()
                         if not charDB.bags[itemID] then charDB.bags[itemID] = 0 end
                         charDB.bags[itemID] = charDB.bags[itemID] + info.stackCount
                     end
+                    
+                    local seenKey = AM:GetItemSeenKey(itemID, info, info.hyperlink)
+                    if seenKey then
+                        activeSeenKeys[seenKey] = true
+                    end
                 end
+            end
+        end
+    end
+    
+    -- Cache management for seen items (only applies to player bags)
+    if not charDB.seenItems then
+        charDB.seenItems = {}
+        for key in pairs(activeSeenKeys) do
+            charDB.seenItems[key] = true
+        end
+    else
+        -- Purge items that have been sold or deleted from bags
+        for key in pairs(charDB.seenItems) do
+            if not activeSeenKeys[key] then
+                charDB.seenItems[key] = nil
             end
         end
     end

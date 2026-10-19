@@ -1,8 +1,6 @@
-# CHANGES for the next version 1.0.1
+# CHANGES for version 1.0.1
 
-- WHEN the player logs into the game, there's a system that shows which character has received in game mail. Can we tap into that from anywhere to check in real time if a character received mail (i.e. bank character selling in auction house). We don't necessarily need to know the contents, just that it did receive mail.
-- the ALT STATUS view that we get when clicking on the minimap icon is now a bit redundant. I want to remove the link to view the character bags and instead rewamp the bank view with the same as the "one bag" view we used for the bank, with the yellow background, sorting and searching. 
-- the ALT STATUS view shall show the icon to view cached mail but also the icon for the character receiving new mail (if possible) by adding a yellow aura around the mail icon. 
-- if possible, when a character receives email and the player is not in combat, we should notify the player that the ALT character received mail (or notify them as soon as they are out of combat), with a message like " [name of the character] just received mail". 
-- move the profession icons and levels in the same view as the links to view bank and mail. 
-- if it's a problem we could enable the mail monitoring live through an mutually exclusive option box that only allows 1 character to be monitored live outside the currently played. Otherwise we should just add checkboxes to select which characters to monitor live outside the currently played.
+- [x] BUG: cannot delete characters - after clicking on delete we get the popup but then clicking on "delete" on the popup doesn't do anything. (FIXED: Passed target character data to `StaticPopup_Show`, moved dialog to module scope, and purged child frames)
+- [x] BUG: ignoring characters should immediately change the total wealth owned in the ALT manager view (FIXED: Ignored alts are excluded from wealth accumulation immediately, added "Show Ignored" checkbox to unignore)
+- [x] new feature: highlight new items in the bags once. Keep a cache of previously seen items and remove it when the item is sold or deleted from the bags. This only applies to player bags. (IMPLEMENTED: Stackables highlight on first acquisition and ignore subsequent duplicates; non-stackables highlight per instance; highlights persist until moused over; sold/deleted items are pruned from the cache)
+

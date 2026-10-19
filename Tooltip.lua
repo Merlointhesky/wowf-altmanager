@@ -14,7 +14,7 @@ local function AddItemDataToTooltip(tooltip, itemID)
     local addedHeader = false
     
     for charName, charData in pairs(AltManagerDB[ruleset][faction]) do
-        if charName ~= myName then
+        if charName ~= myName and not charData.isIgnored then
             local inBags = charData.bags and charData.bags[itemID] or 0
             local inProf = charData.profession and charData.profession[itemID] or 0
             local inQuiv = charData.quiver and charData.quiver[itemID] or 0

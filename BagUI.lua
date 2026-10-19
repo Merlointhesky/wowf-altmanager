@@ -480,8 +480,8 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 local faction = AM.DB:GetFaction()
                 local chars = AM.DB.data[ruleset] and AM.DB.data[ruleset][faction]
                 if chars then
-                    for charName, _ in pairs(chars) do
-                        if charName ~= AM.DB:GetFullPlayerName() then
+                    for charName, charData in pairs(chars) do
+                        if charName ~= AM.DB:GetFullPlayerName() and not (charData and charData.isIgnored) then
                             AddOption(charName, false)
                         end
                     end
@@ -564,8 +564,10 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         local totalGold = 0
         local chars = {}
         for cName, cData in pairs(AM.DB.data[ruleset][faction]) do
-            table.insert(chars, {name = cName, money = cData.money or 0})
-            totalGold = totalGold + (cData.money or 0)
+            if not cData.isIgnored then
+                table.insert(chars, {name = cName, money = cData.money or 0})
+                totalGold = totalGold + (cData.money or 0)
+            end
         end
         table.sort(chars, function(a, b) return a.money > b.money end)
         
@@ -601,6 +603,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     
     -- Update function
     win.Update = function(self)
+        local isPlayerBags = (self.storageType == "bags" and not self.selectedCharacter)
         local allSectionsData = {}
         
         -- Gather data
@@ -1040,11 +1043,63 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     if dummy then btn:SetParent(dummy) end
                     btn:SetID(item.slot)
                     
-                    -- Clear "New Item" glow
-                    if C_NewItems and C_NewItems.RemoveNewItem then
-                        C_NewItems.RemoveNewItem(item.bag, item.slot)
+                    -- New Item Highlight (Player bags only, until moused over)
+                    local isNew = false
+                    local seenKey = nil
+                    if isPlayerBags and not item.isEmpty then
+                        local itemID = (item.info and item.info.itemID) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
+                        seenKey = AM:GetItemSeenKey(itemID, item.info, item.link)
+                        local charDB = AM.DB:GetCurrentCharacterDB()
+                        if seenKey and charDB and charDB.seenItems and not charDB.seenItems[seenKey] then
+                            isNew = true
+                        end
                     end
-                    if btn.NewItemTexture then btn.NewItemTexture:Hide() end
+
+                    if not btn.AM_NewItemGlow then
+                        btn.AM_NewItemGlow = btn:CreateTexture(nil, "OVERLAY", nil, 6)
+                        btn.AM_NewItemGlow:SetPoint("TOPLEFT", -3, 3)
+                        btn.AM_NewItemGlow:SetPoint("BOTTOMRIGHT", 3, -3)
+                        btn.AM_NewItemGlow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+                        btn.AM_NewItemGlow:SetBlendMode("ADD")
+                        btn.AM_NewItemGlow:SetVertexColor(1, 0.85, 0.2, 0.85)
+                    end
+
+                    if not btn.AM_NewItemHooked then
+                        btn:HookScript("OnEnter", function(self)
+                            if self.AM_SeenKey then
+                                local charDB = AM.DB:GetCurrentCharacterDB()
+                                if charDB and charDB.seenItems then
+                                    charDB.seenItems[self.AM_SeenKey] = true
+                                end
+                                if self.AM_NewItemGlow then self.AM_NewItemGlow:Hide() end
+                                if self.NewItemTexture then self.NewItemTexture:Hide() end
+                                if self.newitemglowAnim and self.newitemglowAnim:IsPlaying() then
+                                    self.newitemglowAnim:Stop()
+                                end
+                                self.AM_SeenKey = nil
+                            end
+                        end)
+                        btn.AM_NewItemHooked = true
+                    end
+
+                    if isNew then
+                        btn.AM_SeenKey = seenKey
+                        btn.AM_NewItemGlow:Show()
+                        if btn.NewItemTexture then btn.NewItemTexture:Show() end
+                        if btn.newitemglowAnim and not btn.newitemglowAnim:IsPlaying() then
+                            btn.newitemglowAnim:Play()
+                        end
+                    else
+                        btn.AM_SeenKey = nil
+                        btn.AM_NewItemGlow:Hide()
+                        if btn.NewItemTexture then btn.NewItemTexture:Hide() end
+                        if btn.newitemglowAnim and btn.newitemglowAnim:IsPlaying() then
+                            btn.newitemglowAnim:Stop()
+                        end
+                        if C_NewItems and C_NewItems.RemoveNewItem then
+                            C_NewItems.RemoveNewItem(item.bag, item.slot)
+                        end
+                    end
                     if btn.BattlepayItemTexture then btn.BattlepayItemTexture:Hide() end
                     if btn.flash then btn.flash:Hide() end
                     
@@ -1323,6 +1378,12 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
 
     win:SetScript("OnEvent", function(self, event, ...)
         if not self:IsShown() then return end
+        if event == "PLAYER_MONEY" then
+            if not self.selectedCharacter then
+                self.moneyText:SetText(AM_FormatGold(GetMoney()))
+            end
+            return
+        end
         if event == "BAG_UPDATE_DELAYED" then
             if updateTimer then
                 updateTimer:Cancel()
@@ -1342,6 +1403,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     pcall(win.RegisterEvent, win, "BAG_UPDATE_DELAYED")
     win:RegisterEvent("BAG_UPDATE_COOLDOWN")
     win:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+    win:RegisterEvent("PLAYER_MONEY")
     
     win:SetScript("OnShow", function(self) self:Update() end)
     win:SetScript("OnHide", function(self)

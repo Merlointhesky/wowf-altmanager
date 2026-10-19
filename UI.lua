@@ -129,10 +129,23 @@ frame.totalGoldValue = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight
 frame.totalGoldValue:SetPoint("LEFT", frame.totalGoldText, "RIGHT", 5, 0)
 frame.totalGoldValue:SetText("0")
 
+-- Show Ignored Checkbox
+frame.showIgnoredCheck = CreateFrame("CheckButton", "AltManagerShowIgnoredCheck", frame, "UICheckButtonTemplate")
+frame.showIgnoredCheck:SetSize(20, 20)
+frame.showIgnoredCheck:SetPoint("BOTTOMRIGHT", -120, 8)
+frame.showIgnoredCheck.text = frame.showIgnoredCheck:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+frame.showIgnoredCheck.text:SetPoint("LEFT", frame.showIgnoredCheck, "RIGHT", 2, 0)
+frame.showIgnoredCheck.text:SetText("Show Ignored")
+frame.showIgnoredCheck:SetChecked(false)
+frame.showIgnoredCheck:SetScript("OnClick", function(self)
+    AM.UI.showIgnored = self:GetChecked()
+    AM.UI:RefreshData()
+end)
+
 -- Container for character rows
 frame.scrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
 frame.scrollFrame:SetPoint("TOPLEFT", 10, -30)
-frame.scrollFrame:SetPoint("BOTTOMRIGHT", -30, 10)
+frame.scrollFrame:SetPoint("BOTTOMRIGHT", -30, 30)
 frame.scrollChild = CreateFrame("Frame")
 frame.scrollChild:SetSize(710, 1)
 frame.scrollFrame:SetScrollChild(frame.scrollChild)
@@ -772,6 +785,7 @@ local function CreateCharacterRow(index)
     -- Background for alternating colors
     local bg = row:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
+    row.bg = bg
     if index % 2 == 0 then
         bg:SetColorTexture(1, 1, 1, 0.05)
     else
@@ -921,24 +935,73 @@ local function CreateCharacterRow(index)
     end)
     row.deleteBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
     row.deleteBtn:SetScript("OnClick", function(self)
-        StaticPopup_Show("AM_DELETE_CHARACTER", row.charName)
+        local targetName = row.charName
+        if not targetName or targetName == "" then return end
+        local dialog = StaticPopup_Show("AM_DELETE_CHARACTER", targetName, nil, targetName)
+        if dialog then
+            dialog.data = targetName
+        end
     end)
-    if row.charName == AM.DB:GetFullPlayerName() then
-        row.deleteBtn:Hide()
-    end
-
-
-
-
-
-
-    -- Delete Button (remove from DB)
-
-
-
     
     return row
 end
+
+-- Confirmation dialogs for ignore and delete actions
+StaticPopupDialogs["AM_IGNORE_CHARACTER"] = {
+    text = "Ignore %s? This will hide the character from the list and account wealth.",
+    button1 = "Ignore",
+    button2 = "Cancel",
+    OnAccept = function(self, data)
+        local targetName = data or (self and self.data)
+        if not targetName then return end
+        if targetName == AM.DB:GetFullPlayerName() then
+            UIErrorsFrame:AddMessage("You cannot ignore your own character.", 1.0, 0.0, 0.0)
+            return
+        end
+        local ruleset = AM.DB:GetRuleset()
+        local faction = AM.DB:GetFaction()
+        if AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][targetName] then
+            AltManagerDB[ruleset][faction][targetName].isIgnored = true
+        end
+        AM.UI:RefreshData()
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
+
+StaticPopupDialogs["AM_DELETE_CHARACTER"] = {
+    text = "Delete %s? This will permanently remove all saved data for this character.",
+    button1 = "Delete",
+    button2 = "Cancel",
+    OnAccept = function(self, data)
+        local targetName = data or (self and self.data)
+        if not targetName then return end
+        local myName = AM.DB:GetFullPlayerName()
+        if targetName == myName then
+            UIErrorsFrame:AddMessage("You cannot delete the character you are currently playing.", 1, 0, 0)
+            return
+        end
+        local ruleset = AM.DB:GetRuleset()
+        local faction = AM.DB:GetFaction()
+        if AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] then
+            AltManagerDB[ruleset][faction][targetName] = nil
+        end
+        if AM.DB.data and AM.DB.data[ruleset] and AM.DB.data[ruleset][faction] then
+            AM.DB.data[ruleset][faction][targetName] = nil
+        end
+        if AM.UI.AltInventoryWindow and AM.UI.AltInventoryWindow.selectedCharacter == targetName then
+            AM.UI.AltInventoryWindow:Hide()
+        end
+        if AM.UI.ItemViewer and AM.UI.ItemViewer:IsShown() then
+            AM.UI.ItemViewer:Hide()
+        end
+        AM.UI:RefreshData()
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
 
 function AM.UI:RefreshData()
     local ruleset = AM.DB:GetRuleset()
@@ -947,8 +1010,9 @@ function AM.UI:RefreshData()
     if not AltManagerDB or not AltManagerDB[ruleset] or not AltManagerDB[ruleset][faction] then return end
     
     local chars = AltManagerDB[ruleset][faction]
+    local myName = AM.DB:GetFullPlayerName()
     
-    -- Hide all existing rows
+    -- Hide all existing rows initially
     for _, row in ipairs(rows) do
         row:Hide()
     end
@@ -971,226 +1035,206 @@ function AM.UI:RefreshData()
     
     for _, charName in ipairs(charNames) do
         local charData = chars[charName]
-        local row = rows[index]
-        if not row then
-            row = CreateCharacterRow(index)
-            table.insert(rows, row)
-        end
+        local isCurrentPlayer = (charName == myName)
+        local isIgnored = charData.isIgnored and not isCurrentPlayer
         
-        row.charName = charName
-        
-        -- Hide row if ignored (except current player)
-        if charData.isIgnored then
-            if not charName:find(AM.DB:GetFullPlayerName()) then
-                row:Hide()
+        if not isIgnored or AM.UI.showIgnored then
+            local row = rows[index]
+            if not row then
+                row = CreateCharacterRow(index)
+                table.insert(rows, row)
             end
-        end
-        -- Hide delete button for the character currently being played
-        if charName == AM.DB:GetFullPlayerName() then
-            row.deleteBtn:Hide()
-        else
-            row.deleteBtn:Show()
-        end
--- Apply Class Color & Icon
-        local classColor = charData.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[charData.class]
-        if classColor then
-            row.nameText:SetText(string.format("|cff%02x%02x%02x%s|r (Lvl %d)", classColor.r*255, classColor.g*255, classColor.b*255, charName, charData.level or 0))
-        else
-            row.nameText:SetText(string.format("%s (Lvl %d)", charName, charData.level or 0))
-        end
-        
-        if charData.class and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[charData.class] then
-            row.classIcon:SetTexCoord(unpack(CLASS_ICON_TCOORDS[charData.class]))
-            row.classIcon:Show()
-        else
-            row.classIcon:Hide()
-        end
-        
-        -- Add Rest XP rendering
-        local restXP = AM.DB:GetRealtimeRestXP(charName)
-        if restXP > 0 then
-            local maxXP = charData.maxXP or 1
-            if maxXP < 1 then maxXP = 1 end
-            local bars = (restXP / maxXP) * 20
-            row.restXPText:SetText(string.format("Rest: %.1f Bars", bars))
-        else
-            row.restXPText:SetText("")
-        end
-        
-        -- Check if professions exist and spawn icons dynamically
-        if not row.profButtons then row.profButtons = {} end
-        for _, pb in ipairs(row.profButtons) do pb:Hide() end
-        
-        local currentX = 0
-        if charData.professions and #charData.professions > 0 then
-            -- Cleanup bugged blank professions that were mistakenly saved
-            for i = #charData.professions, 1, -1 do
-                local p = charData.professions[i]
-                if not p.name or p.name == "" then
-                    table.remove(charData.professions, i)
+            
+            row.charName = charName
+            row:SetPoint("TOPLEFT", 0, -(index - 1) * 40)
+            
+            if row.bg then
+                if index % 2 == 0 then
+                    row.bg:SetColorTexture(1, 1, 1, 0.05)
+                else
+                    row.bg:SetColorTexture(0, 0, 0, 0)
                 end
             end
             
-            for i, prof in ipairs(charData.professions) do
-                local pBtn = row.profButtons[i]
-                if not pBtn then
-                    pBtn = CreateFrame("Button", nil, row.profContainer)
-                    pBtn:SetSize(20, 20)
+            if isIgnored then
+                row:SetAlpha(0.5)
+            else
+                row:SetAlpha(1.0)
+            end
+            
+            -- Hide ignore and delete buttons for current character
+            if isCurrentPlayer then
+                row.deleteBtn:Hide()
+                row.ignoreBtn:Hide()
+            else
+                row.deleteBtn:Show()
+                row.ignoreBtn:Show()
+            end
+            
+            -- Apply Class Color & Icon
+            local classColor = charData.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[charData.class]
+            local ignoredSuffix = isIgnored and " |cffff5555[Ignored]|r" or ""
+            if classColor then
+                row.nameText:SetText(string.format("|cff%02x%02x%02x%s|r (Lvl %d)%s", classColor.r*255, classColor.g*255, classColor.b*255, charName, charData.level or 0, ignoredSuffix))
+            else
+                row.nameText:SetText(string.format("%s (Lvl %d)%s", charName, charData.level or 0, ignoredSuffix))
+            end
+            
+            if charData.class and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[charData.class] then
+                row.classIcon:SetTexCoord(unpack(CLASS_ICON_TCOORDS[charData.class]))
+                row.classIcon:Show()
+            else
+                row.classIcon:Hide()
+            end
+            
+            -- Add Rest XP rendering
+            local restXP = AM.DB:GetRealtimeRestXP(charName)
+            if restXP > 0 then
+                local maxXP = charData.maxXP or 1
+                if maxXP < 1 then maxXP = 1 end
+                local bars = (restXP / maxXP) * 20
+                row.restXPText:SetText(string.format("Rest: %.1f Bars", bars))
+            else
+                row.restXPText:SetText("")
+            end
+            
+            -- Check if professions exist and spawn icons dynamically
+            if not row.profButtons then row.profButtons = {} end
+            for _, pb in ipairs(row.profButtons) do pb:Hide() end
+            
+            local currentX = 0
+            if charData.professions and #charData.professions > 0 then
+                -- Cleanup bugged blank professions that were mistakenly saved
+                for i = #charData.professions, 1, -1 do
+                    local p = charData.professions[i]
+                    if not p.name or p.name == "" then
+                        table.remove(charData.professions, i)
+                    end
+                end
+                
+                for i, prof in ipairs(charData.professions) do
+                    -- Ensure recipes for this character are up-to-date
+                    AM.DB:UpdateRecipes()
+                    local pBtn = row.profButtons[i]
+                    if not pBtn then
+                        pBtn = CreateFrame("Button", nil, row.profContainer)
+                        pBtn:SetSize(20, 20)
+                        
+                        pBtn.icon = pBtn:CreateTexture(nil, "BORDER")
+                        pBtn.icon:SetAllPoints()
+                        
+                        pBtn.rankText = pBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                        pBtn.rankText:SetPoint("LEFT", pBtn, "RIGHT", 3, 0)
+                        pBtn.rankText:SetTextColor(0.8, 0.8, 0.8)
+                        
+                        pBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
+                        
+                        pBtn:SetScript("OnEnter", function(self)
+                            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                            GameTooltip:AddLine(self.profName, 1, 1, 1)
+                            GameTooltip:AddLine("Level: " .. self.profRank .. " / " .. self.profMax, 1, 0.82, 0)
+                            GameTooltip:AddLine("<Click to view recipes>", 0, 1, 0)
+                            GameTooltip:Show()
+                        end)
+                        pBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
+                        
+                        row.profButtons[i] = pBtn
+                    end
                     
-                    pBtn.icon = pBtn:CreateTexture(nil, "BORDER")
-                    pBtn.icon:SetAllPoints()
+                    pBtn.profName = prof.name
+                    pBtn.profRank = prof.rank
+                    pBtn.profMax = prof.maxRank
                     
-                    pBtn.rankText = pBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-                    pBtn.rankText:SetPoint("LEFT", pBtn, "RIGHT", 3, 0)
-                    pBtn.rankText:SetTextColor(0.8, 0.8, 0.8)
-                    
-                    pBtn:SetHighlightTexture("Interface\\Buttons\\Button-Hilight-Square", "ADD")
-                    
-                    pBtn:SetScript("OnEnter", function(self)
-                        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-                        GameTooltip:AddLine(self.profName, 1, 1, 1)
-                        GameTooltip:AddLine("Level: " .. self.profRank .. " / " .. self.profMax, 1, 0.82, 0)
-                        GameTooltip:AddLine("<Click to view recipes>", 0, 1, 0)
-                        GameTooltip:Show()
+                    pBtn:SetScript("OnClick", function(self)
+                        AM.UI:ShowRecipes(row.charName, self.profName)
                     end)
-                    pBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
                     
-                    row.profButtons[i] = pBtn
-                end
-                
-                pBtn.profName = prof.name
-                pBtn.profRank = prof.rank
-                pBtn.profMax = prof.maxRank
-                
-                pBtn:SetScript("OnClick", function(self)
-                    AM.UI:ShowRecipes(row.charName, self.profName)
-                end)
-                
-                pBtn.icon:SetTexture(prof.texture or "Interface\\Icons\\INV_Misc_QuestionMark")
-                pBtn.rankText:SetText(prof.rank)
-                
-                pBtn:SetPoint("LEFT", row.profContainer, "LEFT", currentX, 0)
-                currentX = currentX + 20 + pBtn.rankText:GetStringWidth() + 10
-                
-                pBtn:Show()
-            end
-        end
-        
-        -- Check if auctions exist to show the button
-        if charData.auctions and #charData.auctions > 0 then
-            row.aucBtn:Show()
-        else
-            row.aucBtn:Hide()
-        end
-        
-        -- Check if mail exists to show the button, and if unread mail exists for the yellow glow
-        local hasMail = false
-        local hasNewMail = false
-        
-        if charData.hasNewMail then
-            hasNewMail = true
-        end
-        
-        if charData.mail then
-            for k, v in pairs(charData.mail) do
-                if v > 0 then
-                    hasMail = true
-                    break
+                    pBtn.icon:SetTexture(prof.texture or "Interface\\Icons\\INV_Misc_QuestionMark")
+                    pBtn.rankText:SetText(prof.rank)
+                    
+                    pBtn:SetPoint("LEFT", row.profContainer, "LEFT", currentX, 0)
+                    currentX = currentX + 20 + pBtn.rankText:GetStringWidth() + 10
+                    
+                    pBtn:Show()
                 end
             end
-        end
-        
-        if charData.mailCount and charData.mailCount > 0 then
-            hasMail = true
-        end
-        
-        -- Check for expired auctions
-        if charData.auctions then
-            for _, auc in ipairs(charData.auctions) do
-                if auc.expires and time() >= (auc.expires + 3600) then
-                    local deliveryTime = auc.expires + 3600
-                    if not charData.lastMailCheck or charData.lastMailCheck < deliveryTime then
+            
+            -- Check if auctions exist to show the button
+            if charData.auctions and #charData.auctions > 0 then
+                row.aucBtn:Show()
+            else
+                row.aucBtn:Hide()
+            end
+            
+            -- Check if mail exists to show the button, and if unread mail exists for the yellow glow
+            local hasMail = false
+            local hasNewMail = false
+            
+            if charData.hasNewMail then
+                hasNewMail = true
+            end
+            
+            if charData.mail then
+                for k, v in pairs(charData.mail) do
+                    if v > 0 then
                         hasMail = true
-                        hasNewMail = true
                         break
                     end
                 end
             end
-        end
-        
-        if hasNewMail then
-            hasMail = true
-        end
-        
-        if hasMail then
-            row.mailBtn:Show()
-        else
-            row.mailBtn:Hide()
-        end
-        
-        if hasNewMail then
-            row.mailGlow:Show()
-        else
-            row.mailGlow:Hide()
-        end
-        
-        -- Set Gold
-        local money = charData.money or 0
-        row.goldText:SetText(FormatGold(money))
-        totalGold = totalGold + money
-        
-        if not charData.isIgnored or charName == AM.DB:GetFullPlayerName() then
+            
+            if charData.mailCount and charData.mailCount > 0 then
+                hasMail = true
+            end
+            
+            -- Check for expired auctions
+            if charData.auctions then
+                for _, auc in ipairs(charData.auctions) do
+                    if auc.expires and time() >= (auc.expires + 3600) then
+                        local deliveryTime = auc.expires + 3600
+                        if not charData.lastMailCheck or charData.lastMailCheck < deliveryTime then
+                            hasMail = true
+                            hasNewMail = true
+                            break
+                        end
+                    end
+                end
+            end
+            
+            if hasNewMail then
+                hasMail = true
+            end
+            
+            if hasMail then
+                row.mailBtn:Show()
+            else
+                row.mailBtn:Hide()
+            end
+            
+            if hasNewMail then
+                row.mailGlow:Show()
+            else
+                row.mailGlow:Hide()
+            end
+            
+            -- Set Gold & Calculate Total Wealth (excluded if ignored)
+            local money = charData.money or 0
+            row.goldText:SetText(FormatGold(money))
+            if not isIgnored then
+                totalGold = totalGold + money
+            end
+            
             row:Show()
             index = index + 1
         end
     end
     
-    -- Confirmation dialogs for ignore and delete actions
-StaticPopupDialogs["AM_IGNORE_CHARACTER"] = {
-    text = "Ignore %s? This will hide the character from the list.",
-    button1 = "Ignore",
-    button2 = "Cancel",
-    OnAccept = function(self, data)
-        if data == AM.DB:GetFullPlayerName() then
-            UIErrorsFrame:AddMessage("You cannot ignore your own character.", 1.0, 0.0, 0.0)
-            return
-        end
-        local ruleset = AM.DB:GetRuleset()
-        local faction = AM.DB:GetFaction()
-        if AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][data] then
-            AltManagerDB[ruleset][faction][data].isIgnored = true
-        end
-        AM.UI:RefreshData()
-    end,
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-}
-
-StaticPopupDialogs["AM_DELETE_CHARACTER"] = {
-    text = "Delete %s? This will permanently remove all saved data for this character.",
-    button1 = "Delete",
-    button2 = "Cancel",
-    OnAccept = function(self, data)
-        local myName = AM.DB:GetFullPlayerName()
-        if data == myName then
-            UIErrorsFrame:AddMessage("You cannot delete the character you are currently playing.", 1, 0, 0)
-            return
-        end
-        local ruleset = AM.DB:GetRuleset()
-        local faction = AM.DB:GetFaction()
-        if AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] then
-            AltManagerDB[ruleset][faction][data] = nil
-        end
-        AM.UI:RefreshData()
-    end,
-
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-}
-
--- Update Total Wealth Footer
+    -- Hide remaining unused rows
+    for i = index, #rows do
+        rows[i]:Hide()
+    end
+    
+    -- Update Total Wealth Footer
     AM.UI.MainFrame.totalGoldValue:SetText(FormatGold(totalGold))
 end
 
