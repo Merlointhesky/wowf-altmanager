@@ -302,19 +302,20 @@ function AM:IsItemStackable(itemID, info)
     return maxStack > 1
 end
 
-function AM:GetItemSeenKey(itemID, info, link)
+ function AM:GetItemSeenKey(itemID, info, link)
     if not itemID then return nil end
     local isStackable = AM:IsItemStackable(itemID, info)
+    
     if isStackable then
         return "stack:" .. itemID
     else
-        if info and info.itemGUID and info.itemGUID ~= "" then
-            return info.itemGUID
-        elseif link then
-            local uniqueID = string.match(link, "item:%d+:[-%d]*:[-%d]*:[-%d]*:[-%d]*:[-%d]*:[-%d]*:([-%d]+)")
-            if uniqueID and uniqueID ~= "" and uniqueID ~= "0" then
-                return "item:" .. itemID .. ":" .. uniqueID
+        -- Non-stackable items strip the volatile unique ID but keep enchant/gem data
+        if link then
+            local parts = {strsplit(":", link)}
+            if #parts >= 9 then
+                parts[9] = "0"
             end
+            return table.concat(parts, ":")
         end
         return "item:" .. itemID
     end

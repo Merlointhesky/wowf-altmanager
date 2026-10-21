@@ -1,6 +1,4 @@
-# CHANGES for version 1.0.1
+# CHANGES for version 1.0.2
 
-- [x] BUG: cannot delete characters - after clicking on delete we get the popup but then clicking on "delete" on the popup doesn't do anything. (FIXED: Passed target character data to `StaticPopup_Show`, moved dialog to module scope, and purged child frames)
-- [x] BUG: ignoring characters should immediately change the total wealth owned in the ALT manager view (FIXED: Ignored alts are excluded from wealth accumulation immediately, added "Show Ignored" checkbox to unignore)
-- [x] new feature: highlight new items in the bags once. Keep a cache of previously seen items and remove it when the item is sold or deleted from the bags. This only applies to player bags. (IMPLEMENTED: Stackables highlight on first acquisition and ignore subsequent duplicates; non-stackables highlight per instance; highlights persist until moused over; sold/deleted items are pruned from the cache)
-
+- auto sort also removes the "trash" flags the player has added manually, it shouldn't
+- relogging on a character makes the whole inventory "new". We should keep a cache between logging sessions for each character to know which items are new or not and keep tehm as such. 

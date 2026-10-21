@@ -59,7 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cleaned up redundant layout and duplicate UI definitions across `UI.lua` and `BagUI.lua`.
 
 ---
+## [1.0.2] - 2026-10-21
 
+### Fixed
+- Auto sort also removes the "trash" flags the player has added manually; this behavior has been corrected.
+- Relogging on a character no longer marks the entire inventory as "new". Implemented persistent cache between sessions per character to retain item newness state.
+
+---
 ## [1.0.0] - 2026-10-10
 
 ### Added

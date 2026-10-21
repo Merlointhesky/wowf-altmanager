@@ -115,7 +115,7 @@ function AM:SellTrashItems()
                     else
                         _, _, rarity, _, _, _, _, _, _, _, sellPrice = GetItemInfo(itemID)
                     end
-                    if (rarity == 0 or AM.DB:IsTrash(AM.DB:GetFullPlayerName(), bag, slot, itemID)) and (sellPrice and sellPrice > 0) then
+                    if (rarity == 0 or (AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or "", bag, slot, itemID))) and (sellPrice and sellPrice > 0) then
                         local info = C_Container.GetContainerItemInfo(bag, slot)
                         if info and not info.isLocked then
                             table.insert(sellQueue, {bag = bag, slot = slot, itemID = itemID, price = sellPrice, count = info.stackCount})
@@ -258,10 +258,10 @@ end
 local trashEventFrame = CreateFrame("Frame")
 trashEventFrame:RegisterEvent("MERCHANT_SHOW")
 trashEventFrame:SetScript("OnEvent", function()
-    if AM.DB and AM.DB:IsAutoSellTrashEnabled() then
+    if AM.DB and AM.DB.IsAutoSellTrashEnabled and AM.DB:IsAutoSellTrashEnabled() then
         AM:SellTrashItems()
     end
-    if AM.DB and AM.DB:IsAutoRepairEnabled() and CanMerchantRepair() then
+    if AM.DB and AM.DB.IsAutoRepairEnabled and AM.DB:IsAutoRepairEnabled() and CanMerchantRepair() then
         local cost, canRepair = GetRepairAllCost()
         if canRepair and cost > 0 then
             local money = GetMoney()
@@ -313,7 +313,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     
     -- LEFT COLUMN ICONS --
     
-    -- Blizz UI Button (only on bags)
     if storageType == "bags" then
         local btnBlizz = CreateIconButton(win, windowName.."BlizzUI", "Interface\\Icons\\INV_Misc_Bag_10", "Switch to Blizz UI", "TOPLEFT", win, "TOPLEFT", 10, -30, function()
             win:Hide()
@@ -331,27 +330,78 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         win.currentSort = nil
         win:Update()
         if not win.selectedCharacter and C_Container then
+            -- 1. Backup and Clear Manual Trash Flags (Prevents Sort from wiping/misaligning slot flags)
+            local trashItems = {}
+            local player = AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""
+            local function BackupAndClearTrash(bagList)
+                if not (AM.DB and AM.DB.IsTrash and AM.DB.ToggleTrash) then return end
+                for _, b in ipairs(bagList) do
+                    local slots = C_Container.GetContainerNumSlots(b)
+                    if slots then
+                        for s = 1, slots do
+                            local iID = C_Container.GetContainerItemID(b, s)
+                            if iID and AM.DB:IsTrash(player, b, s, iID) then
+                                trashItems[iID] = true
+                                AM.DB:ToggleTrash(b, s, iID) -- Untoggle flag on the pre-sort coordinate
+                            end
+                        end
+                    end
+                end
+            end
+
+            -- Restore manual trash flags to their new coordinates based on itemID
+            local function RestoreTrash(bagList)
+                if not (AM.DB and AM.DB.IsTrash and AM.DB.ToggleTrash) then return end
+                for _, b in ipairs(bagList) do
+                    local slots = C_Container.GetContainerNumSlots(b)
+                    if slots then
+                        for s = 1, slots do
+                            local iID = C_Container.GetContainerItemID(b, s)
+                            if iID and trashItems[iID] then
+                                if not AM.DB:IsTrash(player, b, s, iID) then
+                                    AM.DB:ToggleTrash(b, s, iID)
+                                end
+                            end
+                        end
+                    end
+                end
+                win:Update()
+            end
+
+            local bagsToBackup = {}
+            if storageType == "bags" then
+                bagsToBackup = {0, 1, 2, 3, 4}
+            elseif storageType == "bank" then
+                bagsToBackup = AM:GetLiveBankBags()
+            elseif storageType == "combined" then
+                bagsToBackup = {0, 1, 2, 3, 4}
+                for _, bb in ipairs(AM:GetLiveBankBags()) do table.insert(bagsToBackup, bb) end
+            end
+            
+            BackupAndClearTrash(bagsToBackup)
+
+            -- 2. Sort the bags and call the restoration sequence 
             if storageType == "bags" then
                 if C_Container.SortBags then C_Container.SortBags() end
+                C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
             elseif storageType == "bank" then
                 if C_Container.SortBankBags then C_Container.SortBankBags() end
+                C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
             elseif storageType == "combined" then
                 if button == "RightButton" then
-                    -- Right-Click: Sort Bank only
                     if C_Container.SortBankBags then C_Container.SortBankBags() end
+                    C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
                 elseif IsShiftKeyDown and IsShiftKeyDown() then
-                    -- Shift-Click: Sort Bags only
                     if C_Container.SortBags then C_Container.SortBags() end
+                    C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
                 else
-                    -- Left-Click: Sort Bank first, then Bags as soon as Bank sorting settles
                     if C_Container.SortBankBags then
                         C_Container.SortBankBags()
                     end
-                    
                     if C_Container.SortBags then
                         local bankBags = AM:GetLiveBankBags()
                         local checkCount = 0
-                        local maxChecks = 30 -- max 3 seconds timeout
+                        local maxChecks = 30
                         local ticker
                         ticker = C_Timer.NewTicker(0.1, function()
                             checkCount = checkCount + 1
@@ -369,15 +419,16 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                                 end
                                 if hasLocks then break end
                             end
-                            
-                            -- When bank finishes moving items (unlocked) or on timeout, start sorting bags
                             if (checkCount >= 2 and not hasLocks) or checkCount >= maxChecks then
                                 ticker:Cancel()
                                 if C_Container.SortBags then
                                     C_Container.SortBags()
                                 end
+                                C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
                             end
                         end)
+                    else
+                        C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
                     end
                 end
             end
@@ -427,7 +478,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     win.activeSortGlow:SetSize(30, 30)
     win.activeSortGlow:Hide()
 
-    -- Character Selection Icon (Bottom Left)
     local charBtn = CreateIconButton(win, windowName.."CharSelect", "Interface\\Icons\\Achievement_GuildPerk_Everyones a Hero_rank2", "Alt Bags", "BOTTOMLEFT", win, "BOTTOMLEFT", 10, 15, nil)
     
     local dd = CreateFrame("Frame", nil, win, "BackdropTemplate")
@@ -476,13 +526,15 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             AddOption("Current Character", true)
             
             if AM.DB and AM.DB.data then
-                local ruleset = AM.DB:GetRuleset()
-                local faction = AM.DB:GetFaction()
-                local chars = AM.DB.data[ruleset] and AM.DB.data[ruleset][faction]
-                if chars then
-                    for charName, charData in pairs(chars) do
-                        if charName ~= AM.DB:GetFullPlayerName() and not (charData and charData.isIgnored) then
-                            AddOption(charName, false)
+                local ruleset = AM.DB.GetRuleset and AM.DB:GetRuleset()
+                local faction = AM.DB.GetFaction and AM.DB:GetFaction()
+                if ruleset and faction then
+                    local chars = AM.DB.data[ruleset] and AM.DB.data[ruleset][faction]
+                    if chars then
+                        for charName, charData in pairs(chars) do
+                            if charName ~= (AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or "") and not (charData and charData.isIgnored) then
+                                AddOption(charName, false)
+                            end
                         end
                     end
                 end
@@ -493,7 +545,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         end
     end)
     
-    -- Money Text (Bottom Right)
     win.moneyText = win:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     win.moneyText:SetPoint("BOTTOMRIGHT", -15, 15)
     
@@ -506,10 +557,14 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         chkAutoSell:SetSize(24, 24)
         chkAutoSell:SetPoint("RIGHT", btnSellTrash, "LEFT", -5, 0)
         chkAutoSell:SetScript("OnShow", function(self)
-            self:SetChecked(AM.DB:IsAutoSellTrashEnabled())
+            if AM.DB and AM.DB.IsAutoSellTrashEnabled then
+                self:SetChecked(AM.DB:IsAutoSellTrashEnabled())
+            end
         end)
         chkAutoSell:SetScript("OnClick", function(self)
-            AM.DB:SetAutoSellTrashEnabled(self:GetChecked())
+            if AM.DB and AM.DB.SetAutoSellTrashEnabled then
+                AM.DB:SetAutoSellTrashEnabled(self:GetChecked())
+            end
         end)
         chkAutoSell:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -527,10 +582,14 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         chkAutoRepair:SetSize(24, 24)
         chkAutoRepair:SetPoint("RIGHT", win.trashTotalText, "LEFT", -10, 0)
         chkAutoRepair:SetScript("OnShow", function(self)
-            self:SetChecked(AM.DB:IsAutoRepairEnabled())
+            if AM.DB and AM.DB.IsAutoRepairEnabled then
+                self:SetChecked(AM.DB:IsAutoRepairEnabled())
+            end
         end)
         chkAutoRepair:SetScript("OnClick", function(self)
-            AM.DB:SetAutoRepairEnabled(self:GetChecked())
+            if AM.DB and AM.DB.SetAutoRepairEnabled then
+                AM.DB:SetAutoRepairEnabled(self:GetChecked())
+            end
         end)
         chkAutoRepair:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -557,9 +616,9 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("AltManager Wealth", 1, 0.82, 0)
         
-        local ruleset = AM.DB:GetRuleset()
-        local faction = AM.DB:GetFaction()
-        if not AM.DB.data[ruleset] or not AM.DB.data[ruleset][faction] then return end
+        local ruleset = AM.DB and AM.DB.GetRuleset and AM.DB:GetRuleset()
+        local faction = AM.DB and AM.DB.GetFaction and AM.DB:GetFaction()
+        if not ruleset or not faction or not AM.DB.data[ruleset] or not AM.DB.data[ruleset][faction] then return end
         
         local totalGold = 0
         local chars = {}
@@ -587,7 +646,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     win.bgContainer:SetAllPoints()
     win.bgContainer:SetFrameLevel(win:GetFrameLevel() + 2)
     
-    -- Prepare dummies for live bags
     win.bagDummies = {}
     if liveSections then
         for _, sec in ipairs(liveSections) do
@@ -596,17 +654,17 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 dummy:SetID(bag)
                 dummy:SetAllPoints()
                 dummy:SetFrameLevel(win:GetFrameLevel() + 5)
+                dummy:Show()
                 win.bagDummies[bag] = dummy
             end
         end
     end
     
-    -- Update function
     win.Update = function(self)
+        
         local isPlayerBags = (self.storageType == "bags" and not self.selectedCharacter)
         local allSectionsData = {}
         
-        -- Gather data
         if not self.selectedCharacter then
             local quiverItems = {}
             local profItems = {}
@@ -630,10 +688,11 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             dummy:SetID(bag)
                             dummy:SetAllPoints()
                             dummy:SetFrameLevel(self:GetFrameLevel() + 5)
+                            dummy:Show()
                             self.bagDummies[bag] = dummy
                         end
-                        local isQuiv = AM.DB:IsQuiver(bag)
-                        local isProf = AM.DB:IsProfessionBag(bag)
+                        local isQuiv = AM.DB and AM.DB.IsQuiver and AM.DB:IsQuiver(bag)
+                        local isProf = AM.DB and AM.DB.IsProfessionBag and AM.DB:IsProfessionBag(bag)
                         local targetList = secItems
                         if isQuiv then
                             targetList = quiverItems
@@ -680,7 +739,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 end
             end
             
-            -- Also scan live reagent bag (bag 5) if present
             local reagentBag = (Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5
             if reagentBag then
                 if not self.bagDummies[reagentBag] then
@@ -688,6 +746,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     dummy:SetID(reagentBag)
                     dummy:SetAllPoints()
                     dummy:SetFrameLevel(self:GetFrameLevel() + 5)
+                    dummy:Show()
                     self.bagDummies[reagentBag] = dummy
                 end
                 local reagentSlots = C_Container.GetContainerNumSlots(reagentBag)
@@ -741,7 +800,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             local charDB = AM.DB.data[ruleset] and AM.DB.data[ruleset][faction] and AM.DB.data[ruleset][faction][self.selectedCharacter]
             
             if charDB then
-                -- Runtime deduplication defense for cached alts
                 if charDB.profession and charDB.bags and not charDB._profDeduplicated then
                     charDB._profDeduplicated = true
                     for itemID, pCount in pairs(charDB.profession) do
@@ -835,13 +893,13 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             
                         local bgR, bgG, bgB = 0.8, 0.8, 0.8
                         if sType == "bank" then
-                            bgR, bgG, bgB = 0.8, 0.8, 0.9 -- Bluish grey for bank
+                            bgR, bgG, bgB = 0.8, 0.8, 0.9
                         elseif sType == "bags" then
-                            bgR, bgG, bgB = 1.0, 0.95, 0.5 -- Yellowish for bags
+                            bgR, bgG, bgB = 1.0, 0.95, 0.5
                         elseif sType == "profession" then
-                            bgR, bgG, bgB = 0.4, 0.85, 0.4 -- Greenish for profession
+                            bgR, bgG, bgB = 0.4, 0.85, 0.4
                         elseif sType == "quiver" or sType == "bankQuiver" then
-                            bgR, bgG, bgB = 0.4, 0.6, 1.0 -- Blue background for quivers
+                            bgR, bgG, bgB = 0.4, 0.6, 1.0
                         end
                         
                         table.insert(allSectionsData, {
@@ -853,7 +911,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             end
         end
         
-        -- Filter & Sort
         for _, secData in ipairs(allSectionsData) do
             local items = secData.items
             
@@ -896,8 +953,8 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     if b.link then bID = tonumber(string.match(b.link, "item:(%d+)")) end
                     if not bID and b.isLive and C_Container then bID = C_Container.GetContainerItemID(b.bag, b.slot) end
                     
-                    local aTrash = aID and (a.rarity == 0 or AM.DB:IsTrash(win.selectedCharacter or AM.DB:GetFullPlayerName(), a.bag, a.slot, aID))
-                    local bTrash = bID and (b.rarity == 0 or AM.DB:IsTrash(win.selectedCharacter or AM.DB:GetFullPlayerName(), b.bag, b.slot, bID))
+                    local aTrash = aID and (a.rarity == 0 or (AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(win.selectedCharacter or (AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""), a.bag, a.slot, aID)))
+                    local bTrash = bID and (b.rarity == 0 or (AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(win.selectedCharacter or (AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""), b.bag, b.slot, bID)))
                     
                     local function GetGroup(item, isTrash)
                         if isTrash then return 3 end
@@ -930,16 +987,17 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         for _, b in pairs(self.altButtons) do b:Hide() end
         for _, bg in pairs(self.sectionBGs) do bg:Hide() end
         
-        -- Update Money
         local displayMoney = 0
         if not self.selectedCharacter then
             displayMoney = GetMoney()
         else
-            local ruleset = AM.DB:GetRuleset()
-            local faction = AM.DB:GetFaction()
-            local charDB = AM.DB.data[ruleset] and AM.DB.data[ruleset][faction] and AM.DB.data[ruleset][faction][self.selectedCharacter]
-            if charDB then
-                displayMoney = charDB.money or 0
+            local ruleset = AM.DB and AM.DB.GetRuleset and AM.DB:GetRuleset()
+            local faction = AM.DB and AM.DB.GetFaction and AM.DB:GetFaction()
+            if ruleset and faction then
+                local charDB = AM.DB.data[ruleset] and AM.DB.data[ruleset][faction] and AM.DB.data[ruleset][faction][self.selectedCharacter]
+                if charDB then
+                    displayMoney = charDB.money or 0
+                end
             end
         end
         self.moneyText:SetText(AM_FormatGold(displayMoney))
@@ -996,7 +1054,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             _, _, rarity, _, _, _, _, _, _, _, sellPrice = GetItemInfo(itemID)
                         end
                         
-                        if (rarity == 0 or AM.DB:IsTrash(self.selectedCharacter or AM.DB:GetFullPlayerName(), item.bag, item.slot, itemID)) and (sellPrice and sellPrice > 0) then
+                        if (rarity == 0 or (AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(self.selectedCharacter or (AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""), item.bag, item.slot, itemID))) and (sellPrice and sellPrice > 0) then
                             local count = 1
                             if item.isLive and item.info then count = item.info.stackCount
                             elseif item.count then count = item.count end
@@ -1015,7 +1073,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             end
         end
         
-        -- Layout Grid
         local COLUMNS = 10
         local BUTTON_SIZE = 37
         local SPACING = 2
@@ -1043,15 +1100,11 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     if dummy then btn:SetParent(dummy) end
                     btn:SetID(item.slot)
                     
-                    -- New Item Highlight (Player bags only, until moused over)
-                    local isNew = false
-                    local seenKey = nil
+                   local isNew = false
                     if isPlayerBags and not item.isEmpty then
-                        local itemID = (item.info and item.info.itemID) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
-                        seenKey = AM:GetItemSeenKey(itemID, item.info, item.link)
-                        local charDB = AM.DB:GetCurrentCharacterDB()
-                        if seenKey and charDB and charDB.seenItems and not charDB.seenItems[seenKey] then
-                            isNew = true
+                        -- Ask the game's native bag cache if this specific slot has a new item
+                        if C_NewItems and C_NewItems.IsNewItem then
+                            isNew = C_NewItems.IsNewItem(item.bag, item.slot)
                         end
                     end
 
@@ -1064,24 +1117,26 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         btn.AM_NewItemGlow:SetVertexColor(1, 0.85, 0.2, 0.85)
                     end
 
-                    if not btn.AM_NewItemHooked then
+                   if not btn.AM_NewItemHooked then
                         btn:HookScript("OnEnter", function(self)
-                            if self.AM_SeenKey then
-                                local charDB = AM.DB:GetCurrentCharacterDB()
-                                if charDB and charDB.seenItems then
-                                    charDB.seenItems[self.AM_SeenKey] = true
-                                end
-                                if self.AM_NewItemGlow then self.AM_NewItemGlow:Hide() end
+                            if self.AM_NewItemGlow and self.AM_NewItemGlow:IsShown() then
+                                self.AM_NewItemGlow:Hide()
                                 if self.NewItemTexture then self.NewItemTexture:Hide() end
                                 if self.newitemglowAnim and self.newitemglowAnim:IsPlaying() then
                                     self.newitemglowAnim:Stop()
                                 end
-                                self.AM_SeenKey = nil
+                                
+                                -- Tell the game's cache to unflag this slot
+                                local bID = self:GetParent():GetID()
+                                local sID = self:GetID()
+                                if C_NewItems and C_NewItems.RemoveNewItem then
+                                    C_NewItems.RemoveNewItem(bID, sID)
+                                end
                             end
                         end)
                         btn.AM_NewItemHooked = true
                     end
-
+                    
                     if isNew then
                         btn.AM_SeenKey = seenKey
                         btn.AM_NewItemGlow:Show()
@@ -1104,7 +1159,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     if btn.flash then btn.flash:Hide() end
                     
                     if not btn.AM_TrashHooked then
-                        -- Securely block the default action for Alt-RightClick to prevent using/drinking items
                         btn:SetAttribute("alt-type2", "macro")
                         btn:SetAttribute("macrotext-alt-type2", "")
                         
@@ -1122,8 +1176,10 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                                     end
                                     
                                     if sellPrice and sellPrice > 0 then
-                                        AM.DB:ToggleTrash(bID, sID, iID)
-                                        AM.BagUI:Update()
+                                        if AM.DB and AM.DB.ToggleTrash then
+                                            AM.DB:ToggleTrash(bID, sID, iID)
+                                        end
+                                        if AM.BagUI then AM.BagUI:Update() end
                                     else
                                         print("|cffffff00AltManager|r: Cannot mark items with no sell value as trash.")
                                     end
@@ -1166,7 +1222,9 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     local startsQuest = false
                     if not item.isEmpty then
                         local itemID = (item.info and item.info.itemID) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
-                        startsQuest = AM.DB:ItemStartsQuest(itemID, item.link, item.bag, item.slot)
+                        if AM.DB and AM.DB.ItemStartsQuest then
+                            startsQuest = AM.DB:ItemStartsQuest(itemID, item.link, item.bag, item.slot)
+                        end
                     end
                     
                     if btn.IconQuestTexture then
@@ -1234,7 +1292,9 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     local startsQuest = false
                     if not item.isEmpty then
                         local itemID = item.itemID or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
-                        startsQuest = AM.DB:ItemStartsQuest(itemID, item.link, nil, nil)
+                        if AM.DB and AM.DB.ItemStartsQuest then
+                            startsQuest = AM.DB:ItemStartsQuest(itemID, item.link, nil, nil)
+                        end
                     end
                     if startsQuest then btn.questIcon:Show() else btn.questIcon:Hide() end
                     
@@ -1260,7 +1320,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 end
                 
                 local isExplicitTrash = false
-                if iID and AM.DB:IsTrash(win.selectedCharacter or AM.DB:GetFullPlayerName(), item.bag, item.slot, iID) then
+                if iID and AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(win.selectedCharacter or (AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""), item.bag, item.slot, iID) then
                     isExplicitTrash = true
                 end
                 
@@ -1279,7 +1339,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 end
                 
                 btn.UpgradeText:Hide()
-                btn.icon:SetVertexColor(1, 1, 1)
+                if btn.icon then btn.icon:SetVertexColor(1, 1, 1) end
                 
                 if not win.selectedCharacter and item.link then
                     local _, _, _, ilvl, reqLevel, _, _, _, equipLoc, _, _, classID, subclassID
@@ -1309,7 +1369,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         end
                     end
                     
-                    if not isUsable then
+                    if not isUsable and btn.icon then
                         btn.icon:SetVertexColor(1, 0.1, 0.1)
                     end
                     
@@ -1329,7 +1389,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 rows = row + 1
                 
                 btn:ClearAllPoints()
-                -- Shift grid to the right to make room for the left column icons
                 btn:SetPoint("TOPLEFT", self, "TOPLEFT", 45 + col * (BUTTON_SIZE + SPACING), startY - row * (BUTTON_SIZE + SPACING))
                 btn:Show()
             end
@@ -1347,7 +1406,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 local bg = self.sectionBGs[bgIndex]
                 bg:SetColorTexture(secData.config.r, secData.config.g, secData.config.b, secData.config.a)
                 bg:ClearAllPoints()
-                -- Shift background right as well
                 bg:SetPoint("TOPLEFT", self, "TOPLEFT", 40, startY + 5)
                 bg:SetSize(gridWidth + 10, gridHeight + 10)
                 bg:Show()
@@ -1357,11 +1415,9 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             end
         end
         
-        -- Ensure minimum height to fit the left column icons (6 icons + bottom icon)
         local minHeight = 260
         local finalHeight = math.abs(yOffset) + 20
         if finalHeight < minHeight then finalHeight = minHeight end
-        -- Increase width to accommodate left column
         self:SetSize(COLUMNS * (BUTTON_SIZE + SPACING) + 60, finalHeight)
     end
     
@@ -1417,7 +1473,6 @@ end
 
 local bankBagList = AM:GetLiveBankBags()
 
--- Create the Windows
 AM.BagUI = AM:CreateInventoryWindow("AltManagerBagUI", "Bags", "bags", {
     { title = "Main Bags", bags = {0, 1, 2, 3, 4}, r=1.0, g=0.95, b=0.5, a=0.3, alwaysShow=true },
     { title = "Profession", bags = {5}, r=0.4, g=0.85, b=0.4, a=0.3 },
@@ -1431,7 +1486,6 @@ AM.BankUI = AM:CreateInventoryWindow("AltManagerBankUI", "Bank & Bags", "combine
     { title = "Key Ring", bags = {-2}, r=0.6, g=0.8, b=1.0, a=0.3 }
 }, true)
 
--- Hooks for Bags (using hooksecurefunc to avoid protected frame / BankFrame taint)
 local function AreDefaultBagsOpen()
     if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then return true end
     if ContainerFrame1 and ContainerFrame1:IsShown() then return true end
@@ -1440,13 +1494,9 @@ end
 
 local function HideDefaultBags()
     if AM.forceBlizz then return end
-
-    -- Hide Blizzard's built-in Combined Backpack frame
     if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
         ContainerFrameCombinedBags:Hide()
     end
-
-    -- Hide individual container frames
     for i = 1, NUM_CONTAINER_FRAMES or 13 do
         local f = _G["ContainerFrame" .. i]
         if f and f:IsShown() then f:Hide() end
@@ -1519,14 +1569,12 @@ if hooksecurefunc then
     end)
 end
 
--- Hooks for Bank
 local bankEventFrame = CreateFrame("Frame")
 bankEventFrame:RegisterEvent("BANKFRAME_OPENED")
 bankEventFrame:RegisterEvent("BANKFRAME_CLOSED")
 bankEventFrame:SetScript("OnEvent", function(self, event)
     if event == "BANKFRAME_OPENED" then
         if not AM.forceBlizz then
-            -- Hide default Blizzard bank window and combined bags on interaction
             if BankFrame and BankFrame:IsShown() then
                 BankFrame:Hide()
             end
@@ -1542,4 +1590,3 @@ bankEventFrame:SetScript("OnEvent", function(self, event)
         end
     end
 end)
-
