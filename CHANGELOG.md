@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-10-10
+
+### Added
+- **Initial Release**:
+  - Realmless scoping support across rulesets (PvE, PvP, Hardcore, RP) and factions.
+  - Cross-character inventory (bags), bank, and currency tracking.
+  - Rest XP tracking and mathematical calculation of offline rested accumulation.
+  - Account wealth dashboard with per-character breakdown and total wealth footer.
+  - Item tooltip injection showing cross-alt ownership quantities across bags and bank.
+  - One-bag combined inventory viewer (`/am` or `/altmanager`) and minimap launcher icon.
+
+---
+
 ## [1.0.1] - 2026-10-19
 
 ### Added
@@ -66,13 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Relogging on a character no longer marks the entire inventory as "new". Implemented persistent cache between sessions per character to retain item newness state.
 
 ---
-## [1.0.0] - 2026-10-10
 
-### Added
-- **Initial Release**:
-  - Realmless scoping support across rulesets (PvE, PvP, Hardcore, RP) and factions.
-  - Cross-character inventory (bags), bank, and currency tracking.
-  - Rest XP tracking and mathematical calculation of offline rested accumulation.
-  - Account wealth dashboard with per-character breakdown and total wealth footer.
-  - Item tooltip injection showing cross-alt ownership quantities across bags and bank.
-  - One-bag combined inventory viewer (`/am` or `/altmanager`) and minimap launcher icon.
+## [1.0.3] - 2026-10-22
+
+### Bugfix
+- fixing issue with some actions being blocked
+
+### Updated
+- new scoring system for suggested upgrades in bags.

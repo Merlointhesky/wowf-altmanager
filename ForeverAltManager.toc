@@ -2,7 +2,7 @@
 ## Title: Forever Alt Manager
 ## Notes: A comprehensive alt management tool.
 ## Author: Merlointhesky
-## Version: 1.0.2
+## Version: 1.0.3
 ## SavedVariables: AltManagerDB, AltManagerDebugLog
 
 Core.lua

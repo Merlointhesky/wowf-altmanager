@@ -198,15 +198,22 @@ local EQUIP_LOC_TO_SLOTS = {
 }
 local scanTooltip = CreateFrame("GameTooltip", "AltManagerScanTooltip", nil, "GameTooltipTemplate")
 
-local function AM_GetEquippedItemLevel(equipLoc)
+local function AM_GetEquippedItemLevel(equipLoc, itemClassID, itemSubclassID)
     local slots = EQUIP_LOC_TO_SLOTS[equipLoc]
     if not slots then return nil end
     
     local lowestILvl = 99999
     local lowestRarity = 999
+    local equippedArmorType = -1
     local has2H = false
-    local mainHandILvl = nil
-    local mainHandRarity = nil
+    local mainHandILvl, mainHandRarity = nil, nil
+    
+    -- Check if player can dual wield (Spell ID 1181 is Dual Wield in most WoW versions, or check for offhand weapon capability)
+    local canDualWield = IsSpellKnown and (IsSpellKnown(1181) or IsSpellKnown(674)) 
+    if not canDualWield and (equipLoc == "INVTYPE_WEAPON") then
+        -- If they can't dual wield, a generic 1H weapon only belongs in the Main Hand (Slot 16)
+        slots = {16}
+    end
     
     if equipLoc == "INVTYPE_WEAPON" or equipLoc == "INVTYPE_WEAPONOFFHAND" or equipLoc == "INVTYPE_SHIELD" or equipLoc == "INVTYPE_HOLDABLE" then
         local mhLink = GetInventoryItemLink("player", 16)
@@ -228,16 +235,20 @@ local function AM_GetEquippedItemLevel(equipLoc)
     for _, slot in ipairs(slots) do
         local link = GetInventoryItemLink("player", slot)
         if link then
-            local ilvl, rarity
+            local ilvl, rarity, _, _, _, _, _, _, _, classID, subclassID
             if C_Item and C_Item.GetItemInfo then
-                _, _, rarity, ilvl = C_Item.GetItemInfo(link)
+                _, _, rarity, ilvl, _, _, _, _, _, _, _, classID, subclassID = C_Item.GetItemInfo(link)
             elseif GetItemInfo then
-                _, _, rarity, ilvl = GetItemInfo(link)
+                _, _, rarity, ilvl, _, _, _, _, _, _, _, classID, subclassID = GetItemInfo(link)
             end
             
             if ilvl and ilvl < lowestILvl then
                 lowestILvl = ilvl
                 lowestRarity = rarity or 0
+                -- Store armor subclass (1=Cloth, 2=Leather, 3=Mail, 4=Plate)
+                if classID == 4 then
+                    equippedArmorType = subclassID
+                end
             end
         else
             if slot == 17 and has2H then
@@ -246,13 +257,14 @@ local function AM_GetEquippedItemLevel(equipLoc)
                     lowestRarity = mainHandRarity or 0
                 end
             else
-                return 0, 0
+                -- Slot is empty, return 0 so anything usable is an upgrade
+                return 0, 0, -1
             end
         end
     end
     
-    if lowestILvl == 99999 then return 0, 0 end
-    return lowestILvl, lowestRarity
+    if lowestILvl == 99999 then return 0, 0, -1 end
+    return lowestILvl, lowestRarity, equippedArmorType
 end
 
 local trashEventFrame = CreateFrame("Frame")
@@ -399,37 +411,9 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         C_Container.SortBankBags()
                     end
                     if C_Container.SortBags then
-                        local bankBags = AM:GetLiveBankBags()
-                        local checkCount = 0
-                        local maxChecks = 30
-                        local ticker
-                        ticker = C_Timer.NewTicker(0.1, function()
-                            checkCount = checkCount + 1
-                            local hasLocks = false
-                            for _, b in ipairs(bankBags) do
-                                local slots = C_Container.GetContainerNumSlots(b)
-                                if slots then
-                                    for s = 1, slots do
-                                        local info = C_Container.GetContainerItemInfo(b, s)
-                                        if info and info.isLocked then
-                                            hasLocks = true
-                                            break
-                                        end
-                                    end
-                                end
-                                if hasLocks then break end
-                            end
-                            if (checkCount >= 2 and not hasLocks) or checkCount >= maxChecks then
-                                ticker:Cancel()
-                                if C_Container.SortBags then
-                                    C_Container.SortBags()
-                                end
-                                C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
-                            end
-                        end)
-                    else
-                        C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
+                        C_Container.SortBags()
                     end
+                    C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
                 end
             end
         end
@@ -1159,9 +1143,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     if btn.flash then btn.flash:Hide() end
                     
                     if not btn.AM_TrashHooked then
-                        btn:SetAttribute("alt-type2", "macro")
-                        btn:SetAttribute("macrotext-alt-type2", "")
-                        
                         btn:HookScript("OnClick", function(self, button)
                             if button == "RightButton" and IsAltKeyDown() then
                                 local bID = self:GetParent():GetID()
@@ -1376,12 +1357,37 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     if ilvl and equipLoc and EQUIP_LOC_TO_SLOTS[equipLoc] and isUsable then
                         local isProfessionTool = (classID == 2 and (subclassID == 14 or subclassID == 20))
                         if not isProfessionTool then
-                            local currentIlvl, currentRarity = AM_GetEquippedItemLevel(equipLoc)
-                            if currentIlvl and ilvl > currentIlvl and (not currentRarity or item.rarity >= currentRarity) then
+                            local currentIlvl, currentRarity, equippedArmorType = AM_GetEquippedItemLevel(equipLoc, classID, subclassID)
+                            
+                            local isUpgrade = false
+                            if currentIlvl and ilvl > currentIlvl then
+                                isUpgrade = true
+                                
+                                -- Armor Downgrade Check: If we are wearing armor (classID == 4) and the bag item is a lower armor type, it's not an upgrade.
+                                -- (e.g., Bag item is Leather(2), but we are wearing Mail(3))
+                                if classID == 4 and equippedArmorType > 0 then
+                                    -- Exempt cosmetic/misc armor types like rings/trinkets/cloaks which don't have strict progression
+                                    if equipLoc ~= "INVTYPE_CLOAK" and equipLoc ~= "INVTYPE_FINGER" and equipLoc ~= "INVTYPE_TRINKET" and equipLoc ~= "INVTYPE_HOLDABLE" then
+                                        if subclassID < equippedArmorType then
+                                            isUpgrade = false
+                                        end
+                                    end
+                                end
+                                
+                                -- Optional: If you want to allow a blue item to replace a purple item if the ilvl gap is huge, 
+                                -- you can adjust this rarity rule. For now, we enforce equal or greater rarity.
+                                if isUpgrade and currentRarity and item.rarity < currentRarity then
+                                    -- Allow lower rarity ONLY if the ilvl difference is significant (e.g., +10 ilvl)
+                                    if (ilvl - currentIlvl) < 10 then
+                                        isUpgrade = false
+                                    end
+                                end
+                            end
+                            
+                            if isUpgrade then
                                 btn.UpgradeText:Show()
                             end
                         end
-                    end
                 end
                 
                 local col = (i - 1) % COLUMNS
