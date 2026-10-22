@@ -645,6 +645,14 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     end
     
     win.Update = function(self)
+        -- ADDED: Prevent touching secure item buttons during combat lockdown to avoid taint blocks
+        if InCombatLockdown() then
+            if not self.pendingCombatUpdate then
+                self.pendingCombatUpdate = true
+                self:RegisterEvent("PLAYER_REGEN_ENABLED")
+            end
+            return
+        end
         
         local isPlayerBags = (self.storageType == "bags" and not self.selectedCharacter)
         local allSectionsData = {}
@@ -1084,6 +1092,11 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     if dummy then btn:SetParent(dummy) end
                     btn:SetID(item.slot)
                     
+                    -- ADDED: Explicitly pass the bag and slot to the secure handler 
+                    -- so it does not fall back to querying the tainted dummy parent
+                    btn:SetAttribute("bag", item.bag)
+                    btn:SetAttribute("slot", item.slot)
+
                    local isNew = false
                     if isPlayerBags and not item.isEmpty then
                         -- Ask the game's native bag cache if this specific slot has a new item
@@ -1122,7 +1135,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     end
                     
                     if isNew then
-                        btn.AM_SeenKey = seenKey
+                        btn.AM_SeenKey = true
                         btn.AM_NewItemGlow:Show()
                         if btn.NewItemTexture then btn.NewItemTexture:Show() end
                         if btn.newitemglowAnim and not btn.newitemglowAnim:IsPlaying() then
@@ -1389,6 +1402,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             end
                         end
                 end
+            end
                 
                 local col = (i - 1) % COLUMNS
                 local row = math.floor((i - 1) / COLUMNS)
@@ -1439,6 +1453,14 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     win.RequestUpdate = RequestUpdate
 
     win:SetScript("OnEvent", function(self, event, ...)
+        -- ADDED: Catch the end of combat to refresh safely
+        if event == "PLAYER_REGEN_ENABLED" then
+            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+            self.pendingCombatUpdate = false
+            if self:IsShown() then self:Update() end
+            return
+        end
+
         if not self:IsShown() then return end
         if event == "PLAYER_MONEY" then
             if not self.selectedCharacter then
@@ -1499,7 +1521,7 @@ local function AreDefaultBagsOpen()
 end
 
 local function HideDefaultBags()
-    if AM.forceBlizz then return end
+    -- Always hide default Blizzard bag frames and reset force flag.
     if ContainerFrameCombinedBags and ContainerFrameCombinedBags:IsShown() then
         ContainerFrameCombinedBags:Hide()
     end
@@ -1511,66 +1533,48 @@ end
 
 if hooksecurefunc then
     hooksecurefunc("OpenAllBags", function(frame)
-        if not AM.forceBlizz then
-            HideDefaultBags()
-            if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
-                if AM.BankUI then AM.BankUI:Show() end
-            else
-                if AM.BagUI then AM.BagUI:Show() end
-            end
+        if AM.forceBlizz then return end
+        HideDefaultBags()
+        if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
+            if AM.BankUI then AM.BankUI:Show() end
+        else
+            if AM.BagUI then AM.BagUI:Show() end
         end
     end)
     
     hooksecurefunc("CloseAllBags", function(frame)
-        if not AM.forceBlizz then
-            if AM.BagUI and AM.BagUI:IsShown() then AM.BagUI:Hide() end
-            if AM.BankUI and AM.BankUI:IsShown() then AM.BankUI:Hide() end
-            AM.forceBlizz = false
-        end
+        AM.forceBlizz = false -- Reset the flag when bags are closed
+        if AM.BagUI and AM.BagUI:IsShown() then AM.BagUI:Hide() end
+        if AM.BankUI and AM.BankUI:IsShown() then AM.BankUI:Hide() end
     end)
     
     hooksecurefunc("ToggleAllBags", function()
-        if not AM.forceBlizz then
-            HideDefaultBags()
-            if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
-                if AM.BankUI:IsShown() then AM.BankUI:Hide() else AM.BankUI:Show() end
-            else
-                if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
-            end
+        if AM.forceBlizz then return end
+        HideDefaultBags()
+        if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
+            if AM.BankUI:IsShown() then AM.BankUI:Hide() else AM.BankUI:Show() end
         else
-            if not AreDefaultBagsOpen() then
-                AM.forceBlizz = false
-            end
+            if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
         end
     end)
     
     hooksecurefunc("ToggleBackpack", function()
-        if not AM.forceBlizz then
-            HideDefaultBags()
-            if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
-                if AM.BankUI:IsShown() then AM.BankUI:Hide() else AM.BankUI:Show() end
-            else
-                if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
-            end
+        if AM.forceBlizz then return end
+        HideDefaultBags()
+        if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
+            if AM.BankUI:IsShown() then AM.BankUI:Hide() else AM.BankUI:Show() end
         else
-            if not AreDefaultBagsOpen() then
-                AM.forceBlizz = false
-            end
+            if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
         end
     end)
     
     hooksecurefunc("ToggleBag", function(id)
-        if not AM.forceBlizz then
-            HideDefaultBags()
-            if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
-                if AM.BankUI:IsShown() then AM.BankUI:Hide() else AM.BankUI:Show() end
-            else
-                if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
-            end
+        if AM.forceBlizz then return end
+        HideDefaultBags()
+        if (BankFrame and BankFrame:IsShown()) or (AM.BankUI and AM.BankUI:IsShown()) then
+            if AM.BankUI:IsShown() then AM.BankUI:Hide() else AM.BankUI:Show() end
         else
-            if not AreDefaultBagsOpen() then
-                AM.forceBlizz = false
-            end
+            if AM.BagUI:IsShown() then AM.BagUI:Hide() else AM.BagUI:Show() end
         end
     end)
 end
@@ -1596,3 +1600,16 @@ bankEventFrame:SetScript("OnEvent", function(self, event)
         end
     end
 end)
+
+-- ADDED: Ensure the addon reclaims the bags anytime the Blizzard frames physically hide
+local function ResetBlizzUIFlag()
+    AM.forceBlizz = false
+end
+
+if ContainerFrame1 then
+    ContainerFrame1:HookScript("OnHide", ResetBlizzUIFlag)
+end
+
+if ContainerFrameCombinedBags then
+    ContainerFrameCombinedBags:HookScript("OnHide", ResetBlizzUIFlag)
+end
