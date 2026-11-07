@@ -9,6 +9,8 @@ local function GetScanTooltip()
     end
     return AM.ScanTooltip
 end
+AM.GetScanTooltip = GetScanTooltip
+
 
 function AM.DB:ItemStartsQuest(itemID, itemLink, bag, slot)
     if not itemID and itemLink then
@@ -339,6 +341,7 @@ function AM.DB:GetCurrentCharacterDB()
             bags = {},
             bank = {},
             mail = {},
+            mailMoney = 0,
             hasNewMail = false,
             mailCount = 0,
             lastMailCheck = 0,
@@ -348,9 +351,10 @@ function AM.DB:GetCurrentCharacterDB()
             maxXP = 1,
             isResting = false,
             logoutTime = 0,
-            seenItems = {}
+            seenItems = nil
         }
     end
+
     
     return self.data[ruleset][faction][name]
 end
@@ -511,8 +515,9 @@ function AM.DB:UpdateBags()
     end
     
     -- Cache management for seen items (only applies to player bags)
-    if not charDB.seenItems then
+    if not charDB.seenItems or not charDB.seenItemsInitialized then
         charDB.seenItems = {}
+        charDB.seenItemsInitialized = true
         for key in pairs(activeSeenKeys) do
             charDB.seenItems[key] = true
         end
@@ -532,14 +537,19 @@ function AM.DB:UpdateBank()
     charDB.bankCapacity = 0
     charDB.bankQuiver = {}
     charDB.bankQuiverCapacity = 0
+    charDB.bankProfession = {}
+    charDB.bankProfCapacity = 0
     
     local bankBags = (AM.GetLiveBankBags and AM:GetLiveBankBags()) or { (Enum and Enum.BagIndex and Enum.BagIndex.Bank) or -1 }
     for _, bag in ipairs(bankBags) do
         local isQuiv = self:IsQuiver(bag)
+        local isProf = self:IsProfessionBag(bag)
         local numSlots = C_Container.GetContainerNumSlots(bag)
         if numSlots and numSlots > 0 then
             if isQuiv then
                 charDB.bankQuiverCapacity = charDB.bankQuiverCapacity + numSlots
+            elseif isProf then
+                charDB.bankProfCapacity = charDB.bankProfCapacity + numSlots
             else
                 charDB.bankCapacity = charDB.bankCapacity + numSlots
             end
@@ -553,6 +563,9 @@ function AM.DB:UpdateBank()
                     if isQuiv then
                         if not charDB.bankQuiver[itemID] then charDB.bankQuiver[itemID] = 0 end
                         charDB.bankQuiver[itemID] = charDB.bankQuiver[itemID] + info.stackCount
+                    elseif isProf then
+                        if not charDB.bankProfession[itemID] then charDB.bankProfession[itemID] = 0 end
+                        charDB.bankProfession[itemID] = charDB.bankProfession[itemID] + info.stackCount
                     else
                         if not charDB.bank[itemID] then charDB.bank[itemID] = 0 end
                         charDB.bank[itemID] = charDB.bank[itemID] + info.stackCount
@@ -562,6 +575,7 @@ function AM.DB:UpdateBank()
         end
     end
 end
+
 
 local function ExtractAuctionItemName(msg)
     if not msg then return nil end
@@ -609,7 +623,7 @@ function AM.DB:RemoveAuction(identifier)
             AM.UI:RefreshData()
         end
         if AM.UI and AM.UI.ItemViewer and AM.UI.ItemViewer:IsShown() then
-            local charName = UnitName("player")
+            local charName = self:GetFullPlayerName()
             if AM.UI.ItemViewer.title and AM.UI.ItemViewer.title:GetText() == (charName .. "'s Auctions") then
                 AM.UI:ShowAuctions(charName)
             end
@@ -622,6 +636,7 @@ end
 function AM.DB:UpdateMail()
     local charDB = self:GetCurrentCharacterDB()
     charDB.mail = {}
+    charDB.mailMoney = 0
     charDB.lastMailCheck = time()
     
     local numItems = GetInboxNumItems()
@@ -635,10 +650,14 @@ function AM.DB:UpdateMail()
     end
     
     local hasUnread = false
+    local totalMailMoney = 0
     for i = 1, numItems do
         local packageIcon, stationeryIcon, sender, subject, money, CODAmount, daysLeft, itemCount, wasRead = GetInboxHeaderInfo(i)
         if not wasRead or wasRead == 0 then
             hasUnread = true
+        end
+        if money and money > 0 and (not CODAmount or CODAmount == 0) then
+            totalMailMoney = totalMailMoney + money
         end
         
         -- Detect completed or returned auctions from mail notifications
@@ -675,12 +694,14 @@ function AM.DB:UpdateMail()
         end
     end
     
+    charDB.mailMoney = totalMailMoney
     charDB.hasNewMail = hasUnread
     
     if AM.UI and AM.UI.RefreshData then
         AM.UI:RefreshData()
     end
 end
+
 
 function AM.DB:UpdateProfessions()
     local charDB = self:GetCurrentCharacterDB()
@@ -730,13 +751,15 @@ function AM.DB:UpdateProfessions()
             texture = data.texture,
             rank = data.rank,
             maxRank = data.maxRank,
-            recipes = {}
+            recipes = {},
+            cooldowns = {}
         }
         -- Update mutable fields in case they changed
         entry.texture = data.texture
         entry.rank = data.rank
         entry.maxRank = data.maxRank
         entry.recipes = entry.recipes or {}
+        entry.cooldowns = entry.cooldowns or {}
         table.insert(newProfessions, entry)
     end
 
@@ -756,9 +779,10 @@ function AM.DB:GetRealtimeRestXP(charName)
     local charDB = self.data[ruleset][faction][charName]
     
     -- If it's the current character, just return the exact live value
-    if charName == UnitName("player") then
+    if charName == self:GetFullPlayerName() or charName == UnitName("player") then
         return GetXPExhaustion() or 0
     end
+
     
     -- Offline calculation
     local maxXP = charDB.maxXP or 1
@@ -892,13 +916,8 @@ AM.Events["BANKFRAME_CLOSED"] = function(self)
     AM.UI.bankOpen = false
 end
 
-AM.Events["PLAYERBANKSLOTS_CHANGED"] = function(self)
-    if AM.UI and AM.UI.bankOpen then
-        AM.DB:UpdateBank()
-    end
-end
-
 AM.Events["MAIL_SHOW"] = function(self)
+
     AM.DB:UpdateMail()
 end
 
@@ -941,7 +960,6 @@ AM.Events["TRADE_SKILL_SHOW"] = function(self)
 end
 
 AM.Events["TRADE_SKILL_LIST_UPDATE"] = function(self)
-    AM.DB:UpdateRecipes()
     AM.DB:UpdateProfessions()
     AM.DB:UpdateRecipes()
 end
@@ -978,7 +996,8 @@ function AM.DB:UpdateRecipes()
             texture = "Interface\\Icons\\INV_Misc_QuestionMark",
             rank = 1,
             maxRank = 300,
-            recipes = {}
+            recipes = {},
+            cooldowns = {}
         }
         table.insert(charDB.professions, profData)
     end
@@ -993,6 +1012,8 @@ function AM.DB:UpdateRecipes()
         end
     end
     
+    local oldCooldowns = profData.cooldowns or {}
+    profData.cooldowns = {}
     profData.recipes = {}
     local addedCount = 0
     
@@ -1082,7 +1103,29 @@ function AM.DB:UpdateRecipes()
                     end
                 end
                 
+                local cooldown, isDayCooldown, charges, maxCharges = nil, nil, nil, nil
+                if C_TradeSkillUI.GetRecipeCooldown then
+                    cooldown, isDayCooldown, charges, maxCharges = C_TradeSkillUI.GetRecipeCooldown(recipeID)
+                end
+                local lowerRecipeName = finalName and finalName:lower() or ""
+                local isKnownCooldownCraft = isDayCooldown
+                    or (maxCharges and maxCharges > 0)
+                    or string.find(lowerRecipeName, "^transmute:")
+                    or string.find(lowerRecipeName, "mooncloth")
+                    or string.find(lowerRecipeName, "cured rugged hide")
+                    or string.find(lowerRecipeName, "refined deepsea salt")
+                
+                if (cooldown and cooldown > 0) or isKnownCooldownCraft or oldCooldowns[recipeID] then
+                    profData.cooldowns[recipeID] = {
+                        recipeID = recipeID,
+                        name = finalName,
+                        icon = finalIcon,
+                        expiresAt = (cooldown and cooldown > 0) and (time() + math.floor(cooldown)) or 0
+                    }
+                end
+                
                 table.insert(profData.recipes, {
+                    recipeID = recipeID,
                     name = finalName,
                     icon = finalIcon,
                     link = link,
@@ -1100,16 +1143,14 @@ AM.Events["SKILL_LINES_CHANGED"] = function(self)
     AM.DB:UpdateProfessions()
 end
 
-local aucScanTooltip = CreateFrame("GameTooltip", "AMAuctionScanTooltip", UIParent, "GameTooltipTemplate")
-aucScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
-
 local function GetAuctionScanTooltip()
     if not AM.AuctionScanTooltip then
-        AM.AuctionScanTooltip = CreateFrame("GameTooltip", "AMAuctionScanTooltip", UIParent, "GameTooltipTemplate")
+        AM.AuctionScanTooltip = _G["AMAuctionScanTooltip"] or CreateFrame("GameTooltip", "AMAuctionScanTooltip", UIParent, "GameTooltipTemplate")
         AM.AuctionScanTooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
     end
     return AM.AuctionScanTooltip
 end
+
 
 local function GetSellSlotItemLink()
     local tip = GetAuctionScanTooltip()
@@ -1338,7 +1379,7 @@ function AM.DB:OnAuctionCreated()
             AM.UI:RefreshData()
         end
         if AM.UI and AM.UI.ItemViewer and AM.UI.ItemViewer:IsShown() then
-            local charName = UnitName("player")
+            local charName = AM.DB:GetFullPlayerName()
             if AM.UI.ItemViewer.title and AM.UI.ItemViewer.title:GetText() == (charName .. "'s Auctions") then
                 AM.UI:ShowAuctions(charName)
             end
@@ -1347,6 +1388,7 @@ function AM.DB:OnAuctionCreated()
     
     AM.DB:ScheduleOwnedAuctionsRefresh()
 end
+
 
 function AM.DB:UpdateAuctions()
     local charDB = AM.DB:GetCurrentCharacterDB()
@@ -1692,12 +1734,13 @@ function AM.DB:UpdateAuctions()
         AM.UI:RefreshData()
     end
     if AM.UI and AM.UI.ItemViewer and AM.UI.ItemViewer:IsShown() then
-        local charName = UnitName("player")
+        local charName = AM.DB:GetFullPlayerName()
         if AM.UI.ItemViewer.title and AM.UI.ItemViewer.title:GetText() == (charName .. "'s Auctions") then
             AM.UI:ShowAuctions(charName)
         end
     end
 end
+
 
 AM.Events["OWNED_AUCTIONS_UPDATED"] = function(self)
     AM.DB:UpdateAuctions()
@@ -1790,7 +1833,10 @@ AM.Core:RegisterEventSafe("TRADE_SKILL_LIST_UPDATE")
 AM.Core:RegisterEventSafe("AUCTION_HOUSE_SHOW")
 AM.Core:RegisterEventSafe("AUCTION_HOUSE_CLOSED")
 AM.Core:RegisterEventSafe("OWNED_AUCTIONS_UPDATED")
+AM.Core:RegisterEventSafe("AUCTION_OWNED_LIST_UPDATE")
+AM.Core:RegisterEventSafe("NEW_AUCTION_UPDATE")
 AM.Core:RegisterEventSafe("UI_ERROR_MESSAGE")
 AM.Core:RegisterEventSafe("CHAT_MSG_SYSTEM")
 AM.Core:RegisterEventSafe("AUCTION_MULTISELL_UPDATE")
+
 

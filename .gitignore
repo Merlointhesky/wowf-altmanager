@@ -1,2 +1,5 @@
 ForeverAltManagerDB.lua
 *.log
+lua.exe
+lua_bin/
+

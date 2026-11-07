@@ -30,19 +30,15 @@ function AM.Core:RegisterEventSafe(event)
     pcall(self.RegisterEvent, self, event)
 end
 
-AM.Core:RegisterEventSafe("OWNED_AUCTIONS_UPDATED")
-AM.Core:RegisterEventSafe("AUCTION_OWNED_LIST_UPDATE")
-AM.Core:RegisterEventSafe("NEW_AUCTION_UPDATE")
-AM.Core:RegisterEventSafe("AUCTION_HOUSE_SHOW")
-AM.Core:RegisterEventSafe("AUCTION_HOUSE_CLOSED")
-AM.Core:RegisterEventSafe("UI_ERROR_MESSAGE")
-AM.Core:RegisterEventSafe("CHAT_MSG_SYSTEM")
-AM.Core:RegisterEventSafe("AUCTION_MULTISELL_UPDATE")
-
 AM.Events["GET_ITEM_INFO_RECEIVED"] = function(self, itemID, success)
-    if AM.UI and AM.UI.ItemViewer and AM.UI.ItemViewer:IsShown() and AM.UI.ItemViewer.currentChar then
-        AM.UI:ShowAuctions(AM.UI.ItemViewer.currentChar)
+    if AM.UI and AM.UI.ItemViewer and AM.UI.ItemViewer:IsShown() then
+        if AM.UI.ItemViewer.mode == "AUCTIONS" and AM.UI.ItemViewer.currentChar then
+            AM.UI:ShowAuctions(AM.UI.ItemViewer.currentChar)
+        elseif AM.UI.ItemViewer.mode == "SEARCH" and AM.UI.ItemViewer.searchQuery then
+            AM.UI:ShowSearchResults(AM.UI.ItemViewer.searchQuery)
+        end
     end
 end
 AM.Core:RegisterEventSafe("GET_ITEM_INFO_RECEIVED")
+
 

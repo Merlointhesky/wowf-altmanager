@@ -132,7 +132,7 @@ frame.totalGoldValue:SetText("0")
 -- Show Ignored Checkbox
 frame.showIgnoredCheck = CreateFrame("CheckButton", "AltManagerShowIgnoredCheck", frame, "UICheckButtonTemplate")
 frame.showIgnoredCheck:SetSize(20, 20)
-frame.showIgnoredCheck:SetPoint("BOTTOMRIGHT", -120, 8)
+frame.showIgnoredCheck:SetPoint("BOTTOMRIGHT", -110, 8)
 frame.showIgnoredCheck.text = frame.showIgnoredCheck:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 frame.showIgnoredCheck.text:SetPoint("LEFT", frame.showIgnoredCheck, "RIGHT", 2, 0)
 frame.showIgnoredCheck.text:SetText("Show Ignored")
@@ -141,6 +141,28 @@ frame.showIgnoredCheck:SetScript("OnClick", function(self)
     AM.UI.showIgnored = self:GetChecked()
     AM.UI:RefreshData()
 end)
+
+-- Global Item Search Box across Alts
+frame.searchBox = CreateFrame("EditBox", "AltManagerMainSearchBox", frame, "SearchBoxTemplate")
+frame.searchBox:SetSize(160, 20)
+frame.searchBox:SetPoint("RIGHT", frame.showIgnoredCheck, "LEFT", -15, 0)
+frame.searchBox:SetScript("OnTextChanged", function(self)
+    if SearchBoxTemplate_OnTextChanged then
+        SearchBoxTemplate_OnTextChanged(self)
+    end
+    local query = self:GetText()
+    query = query and string.match(query, "^%s*(.-)%s*$") or ""
+    if query ~= "" then
+        AM.UI:ShowSearchResults(query)
+    elseif AM.UI.ItemViewer and AM.UI.ItemViewer:IsShown() and AM.UI.ItemViewer.mode == "SEARCH" then
+        AM.UI.ItemViewer:Hide()
+    end
+end)
+
+frame.searchLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+frame.searchLabel:SetPoint("RIGHT", frame.searchBox, "LEFT", -6, 0)
+frame.searchLabel:SetText("Search Alts:")
+
 
 -- Container for character rows
 frame.scrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
@@ -207,16 +229,162 @@ function AM.UI:ClearViewer()
             row:Hide()
         end
     end
+    if AM.UI.searchRows then
+        for _, row in ipairs(AM.UI.searchRows) do
+            row:Hide()
+        end
+    end
+end
+
+function AM.UI:ShowSearchResults(query)
+    if not query or query == "" then return end
+    viewer:Show()
+    viewer.mode = "SEARCH"
+    viewer.searchQuery = query
+    if viewer.sortBtn then viewer.sortBtn:Hide() end
+    viewer.title:SetText("Search: " .. query)
+    
+    AM.UI:ClearViewer()
+    if not AM.UI.searchRows then AM.UI.searchRows = {} end
+    local searchRows = AM.UI.searchRows
+    
+    local ruleset = AM.DB:GetRuleset()
+    local faction = AM.DB:GetFaction()
+    if not AltManagerDB or not AltManagerDB[ruleset] or not AltManagerDB[ruleset][faction] then
+        viewer.scrollChild:SetHeight(1)
+        return
+    end
+    
+    local lowerQuery = query:lower()
+    local aggregated = {}
+    
+    for charName, charData in pairs(AltManagerDB[ruleset][faction]) do
+        if type(charData) == "table" and not charData.isIgnored then
+            local seenForChar = {}
+            local containers = { "bags", "bank", "profession", "bankProfession", "quiver", "bankQuiver", "mail" }
+            for _, cKey in ipairs(containers) do
+                if charData[cKey] then
+                    for itemID, count in pairs(charData[cKey]) do
+                        if count and count > 0 then
+                            seenForChar[itemID] = true
+                        end
+                    end
+                end
+            end
+            if charData.auctions then
+                for _, auc in ipairs(charData.auctions) do
+                    if auc.itemID and auc.status ~= 1 then
+                        seenForChar[auc.itemID] = true
+                    end
+                end
+            end
+            
+            for itemID in pairs(seenForChar) do
+                local total = AM:GetCharacterItemCounts(charData, itemID)
+                if total > 0 then
+                    if not aggregated[itemID] then
+                        aggregated[itemID] = 0
+                    end
+                    aggregated[itemID] = aggregated[itemID] + total
+                end
+            end
+        end
+    end
+    
+    local matches = {}
+    for itemID, totalCount in pairs(aggregated) do
+        local name, link, quality, _, _, _, _, _, _, icon
+        if C_Item and C_Item.GetItemInfo then
+            name, link, quality, _, _, _, _, _, _, icon = C_Item.GetItemInfo(itemID)
+        elseif GetItemInfo then
+            name, link, quality, _, _, _, _, _, _, icon = GetItemInfo(itemID)
+        end
+        if not name and C_Item and C_Item.RequestLoadItemDataByID then
+            C_Item.RequestLoadItemDataByID(itemID)
+        end
+        if not icon and C_Item and C_Item.GetItemInfoInstant then
+            local _, _, _, _, ic = C_Item.GetItemInfoInstant(itemID)
+            icon = ic
+        end
+        
+        if name and string.find(name:lower(), lowerQuery, 1, true) then
+            table.insert(matches, {
+                itemID = itemID,
+                name = name,
+                link = link or ("item:" .. itemID),
+                quality = quality or 1,
+                icon = icon or "Interface\\Icons\\INV_Misc_QuestionMark",
+                total = totalCount
+            })
+        end
+    end
+    
+    table.sort(matches, function(a, b)
+        if a.total ~= b.total then return a.total > b.total end
+        return a.name < b.name
+    end)
+    
+    local rowHeight = 26
+    local index = 1
+    for _, m in ipairs(matches) do
+        local row = searchRows[index]
+        if not row then
+            row = CreateFrame("Button", nil, viewer.scrollChild)
+            row:SetSize(viewer:GetWidth() - 20, rowHeight)
+            row:RegisterForClicks("AnyUp")
+            
+            row.icon = row:CreateTexture(nil, "ARTWORK")
+            row.icon:SetSize(20, 20)
+            row.icon:SetPoint("LEFT", 5, 0)
+            
+            row.countText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+            row.countText:SetPoint("RIGHT", -25, 0)
+            row.countText:SetJustifyH("RIGHT")
+            
+            row.nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            row.nameText:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+            row.nameText:SetPoint("RIGHT", row.countText, "LEFT", -6, 0)
+            row.nameText:SetJustifyH("LEFT")
+            
+            row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+            table.insert(searchRows, row)
+        end
+        
+        row.itemID = m.itemID
+        row.link = m.link
+        row.icon:SetTexture(m.icon)
+        row.nameText:SetText(string.find(tostring(m.link), "|h") and m.link or m.name)
+        row.countText:SetText("x" .. m.total)
+        
+        row:SetPoint("TOPLEFT", 0, -(index - 1) * rowHeight)
+        row:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetItemByID(self.itemID)
+            GameTooltip:Show()
+        end)
+        row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        row:Show()
+        index = index + 1
+    end
+    
+    viewer.scrollChild:SetHeight(math.max(1, (index - 1) * rowHeight))
 end
 
 function AM.UI:ShowItems(charName, storageType)
     viewer:Show()
+    viewer.mode = "ITEMS"
     if viewer.sortBtn then viewer.sortBtn:Hide() end
-    viewer.title:SetText(charName .. "'s " .. storageType)
     
     local ruleset = AM.DB:GetRuleset()
     local faction = AM.DB:GetFaction()
-    local charData = AltManagerDB[ruleset][faction][charName]
+    local charData = AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][charName]
+    if not charData then return end
+    
+    if storageType == "Mail" and charData.mailMoney and charData.mailMoney > 0 then
+        viewer.title:SetText(charName .. "'s Mail (" .. FormatGold(charData.mailMoney) .. ")")
+    else
+        viewer.title:SetText(charName .. "'s " .. storageType)
+    end
     
     local items = {}
     if storageType == "Bags" then
@@ -226,6 +394,7 @@ function AM.UI:ShowItems(charName, storageType)
     elseif storageType == "Mail" then
         items = charData.mail or {}
     end
+
     
     AM.UI:ClearViewer()
     
@@ -325,6 +494,7 @@ end
 function AM.UI:ShowRecipes(charName, profName)
     local viewer = AM.UI.ItemViewer
     viewer:Show()
+    viewer.mode = "RECIPES"
     viewer.activeChar = charName
     viewer.activeProf = profName
     if viewer.sortBtn then viewer.sortBtn:Show() end
@@ -332,17 +502,21 @@ function AM.UI:ShowRecipes(charName, profName)
     
     local ruleset = AM.DB:GetRuleset()
     local faction = AM.DB:GetFaction()
-    local charData = AltManagerDB[ruleset][faction][charName]
+    local charData = AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][charName]
+    if not charData then return end
     
     local recipes = {}
+    local profCooldowns = {}
     if charData.professions then
         for _, p in ipairs(charData.professions) do
             if p.name == profName then
                 recipes = p.recipes or {}
+                profCooldowns = p.cooldowns or {}
                 break
             end
         end
     end
+
     
     local function getQualityFromLink(link)
         if not link then return 1 end
@@ -451,11 +625,12 @@ function AM.UI:ShowRecipes(charName, profName)
             local faction = AM.DB:GetFaction()
             for _, r in ipairs(recipe.reagents) do
                 local totalOwned = 0
-                if AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] then
+                if AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and r.itemID then
                     for cName, cData in pairs(AltManagerDB[ruleset][faction]) do
-                        local bagCount = cData.bags and r.itemID and cData.bags[r.itemID] or 0
-                        local bankCount = cData.bank and r.itemID and cData.bank[r.itemID] or 0
-                        totalOwned = totalOwned + bagCount + bankCount
+                        if type(cData) == "table" and not cData.isIgnored then
+                            local charTotal = AM:GetCharacterItemCounts(cData, r.itemID)
+                            totalOwned = totalOwned + charTotal
+                        end
                     end
                 end
                 local reqCount = r.count or 1
@@ -474,6 +649,8 @@ function AM.UI:ShowRecipes(charName, profName)
             end
         end
         
+        row.cooldownInfo = recipe.recipeID and profCooldowns[recipe.recipeID] or nil
+        
         row:SetPoint("TOPLEFT", 0, -(index - 1) * rowHeight)
         row:Show()
         
@@ -485,29 +662,39 @@ function AM.UI:ShowRecipes(charName, profName)
                 GameTooltip:AddLine(self.recipeName, 1, 1, 1)
             end
             
+            if self.cooldownInfo then
+                local rem = (self.cooldownInfo.expiresAt or 0) - time()
+                GameTooltip:AddLine(" ")
+                if rem > 0 then
+                    local hrs = math.floor(rem / 3600)
+                    local mins = math.floor((rem % 3600) / 60)
+                    GameTooltip:AddDoubleLine("Cooldown:", string.format("%dh %dm remaining", hrs, mins), 1, 0.82, 0, 1, 0.5, 0)
+                else
+                    GameTooltip:AddDoubleLine("Cooldown:", "Ready!", 1, 0.82, 0, 0, 1, 0)
+                end
+            end
+            
             if self.reagents and #self.reagents > 0 then
                 GameTooltip:AddLine(" ")
                 GameTooltip:AddLine("Required Materials:")
                 for _, r in ipairs(self.reagents) do
                     local totalOwned = 0
                     local locations = {}
-                    if AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] then
+                    if AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and r.itemID then
                         for cName, cData in pairs(AltManagerDB[ruleset][faction]) do
-                            local bagCount = 0
-                            local bankCount = 0
-                            if cData.bags and r.itemID and cData.bags[r.itemID] then
-                                bagCount = cData.bags[r.itemID]
-                            end
-                            if cData.bank and r.itemID and cData.bank[r.itemID] then
-                                bankCount = cData.bank[r.itemID]
-                            end
-                            local charTotal = bagCount + bankCount
-                            if charTotal > 0 then
-                                totalOwned = totalOwned + charTotal
-                                local locStr = {}
-                                if bagCount > 0 then table.insert(locStr, "Bags: " .. bagCount) end
-                                if bankCount > 0 then table.insert(locStr, "Bank: " .. bankCount) end
-                                table.insert(locations, string.format("  > %s: %s", cName, table.concat(locStr, ", ")))
+                            if type(cData) == "table" and not cData.isIgnored then
+                                local charTotal, inBags, inBank, inProf, inQuiv, inMail = AM:GetCharacterItemCounts(cData, r.itemID)
+                                local usableTotal = inBags + inBank + inProf + inQuiv + inMail
+                                if usableTotal > 0 then
+                                    totalOwned = totalOwned + usableTotal
+                                    local locStr = {}
+                                    if inBags > 0 then table.insert(locStr, "Bags: " .. inBags) end
+                                    if inBank > 0 then table.insert(locStr, "Bank: " .. inBank) end
+                                    if inProf > 0 then table.insert(locStr, "Prof: " .. inProf) end
+                                    if inQuiv > 0 then table.insert(locStr, "Quiver: " .. inQuiv) end
+                                    if inMail > 0 then table.insert(locStr, "Mail: " .. inMail) end
+                                    table.insert(locations, string.format("  > %s: %s", cName, table.concat(locStr, ", ")))
+                                end
                             end
                         end
                     end
@@ -544,6 +731,7 @@ function AM.UI:ShowRecipes(charName, profName)
             end
             GameTooltip:Show()
         end)
+
         
         row:SetScript("OnLeave", function(self)
             GameTooltip:Hide()
@@ -560,6 +748,7 @@ end
 function AM.UI:ShowAuctions(charName)
     local viewer = AM.UI.ItemViewer
     viewer:Show()
+    viewer.mode = "AUCTIONS"
     viewer.currentChar = charName
     if viewer.sortBtn then viewer.sortBtn:Hide() end
     viewer.title:SetText(charName .. "'s Auctions")
@@ -573,8 +762,10 @@ function AM.UI:ShowAuctions(charName)
     
     local ruleset = AM.DB:GetRuleset()
     local faction = AM.DB:GetFaction()
-    local charData = AltManagerDB[ruleset][faction][charName]
+    local charData = AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][charName]
+    if not charData then return end
     local auctions = charData.auctions or {}
+
     
     AM.UI:ClearViewer()
     if not AM.UI.auctionRows then AM.UI.auctionRows = {} end
@@ -850,6 +1041,9 @@ local function CreateCharacterRow(index)
         else
             GameTooltip:AddLine("Mailbox", 1, 1, 1)
         end
+        if charData and charData.mailMoney and charData.mailMoney > 0 then
+            GameTooltip:AddDoubleLine("Pending Gold:", FormatGold(charData.mailMoney), 1, 0.82, 0, 1, 1, 1)
+        end
         GameTooltip:AddLine("Click to view stored mail items", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
@@ -878,8 +1072,19 @@ local function CreateCharacterRow(index)
         local charData = AltManagerDB and AltManagerDB[ruleset] and AltManagerDB[ruleset][faction] and AltManagerDB[ruleset][faction][row.charName]
         local count = (charData and charData.auctions) and #charData.auctions or 0
         GameTooltip:AddLine("View Auctions (" .. count .. " active)")
+        if charData and charData.auctions and #charData.auctions > 0 then
+            local totalBuyout = 0
+            for _, auc in ipairs(charData.auctions) do
+                totalBuyout = totalBuyout + (auc.buyout or 0)
+            end
+            if totalBuyout > 0 then
+                GameTooltip:AddDoubleLine("Total Buyout:", FormatGold(totalBuyout), 1, 0.82, 0, 1, 1, 1)
+                GameTooltip:AddDoubleLine("Est. Net (95%):", FormatGold(math.floor(totalBuyout * 0.95)), 0.5, 1, 0.5, 0.5, 1, 0.5)
+            end
+        end
         GameTooltip:Show()
     end)
+
     row.aucBtn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
     
     -- Profession Container (Dynamic)
@@ -1113,8 +1318,6 @@ function AM.UI:RefreshData()
                 end
                 
                 for i, prof in ipairs(charData.professions) do
-                    -- Ensure recipes for this character are up-to-date
-                    AM.DB:UpdateRecipes()
                     local pBtn = row.profButtons[i]
                     if not pBtn then
                         pBtn = CreateFrame("Button", nil, row.profContainer)
@@ -1122,6 +1325,12 @@ function AM.UI:RefreshData()
                         
                         pBtn.icon = pBtn:CreateTexture(nil, "BORDER")
                         pBtn.icon:SetAllPoints()
+                        
+                        pBtn.cdDot = pBtn:CreateTexture(nil, "OVERLAY")
+                        pBtn.cdDot:SetSize(8, 8)
+                        pBtn.cdDot:SetPoint("TOPRIGHT", 2, 2)
+                        pBtn.cdDot:SetTexture("Interface\\FriendsFrame\\StatusIcon-Online")
+                        pBtn.cdDot:Hide()
                         
                         pBtn.rankText = pBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
                         pBtn.rankText:SetPoint("LEFT", pBtn, "RIGHT", 3, 0)
@@ -1133,6 +1342,21 @@ function AM.UI:RefreshData()
                             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
                             GameTooltip:AddLine(self.profName, 1, 1, 1)
                             GameTooltip:AddLine("Level: " .. self.profRank .. " / " .. self.profMax, 1, 0.82, 0)
+                            if self.profCooldowns and next(self.profCooldowns) then
+                                GameTooltip:AddLine(" ")
+                                GameTooltip:AddLine("Tracked Cooldowns:", 0.2, 0.8, 0.8)
+                                local now = time()
+                                for _, cd in pairs(self.profCooldowns) do
+                                    local rem = (cd.expiresAt or 0) - now
+                                    if rem > 0 then
+                                        local hrs = math.floor(rem / 3600)
+                                        local mins = math.floor((rem % 3600) / 60)
+                                        GameTooltip:AddDoubleLine(cd.name or "Cooldown", string.format("%dh %dm", hrs, mins), 1, 1, 1, 1, 0.5, 0)
+                                    else
+                                        GameTooltip:AddDoubleLine(cd.name or "Cooldown", "Ready!", 1, 1, 1, 0, 1, 0)
+                                    end
+                                end
+                            end
                             GameTooltip:AddLine("<Click to view recipes>", 0, 1, 0)
                             GameTooltip:Show()
                         end)
@@ -1144,6 +1368,31 @@ function AM.UI:RefreshData()
                     pBtn.profName = prof.name
                     pBtn.profRank = prof.rank
                     pBtn.profMax = prof.maxRank
+                    pBtn.profCooldowns = prof.cooldowns
+                    
+                    if pBtn.cdDot then
+                        local hasTracked = false
+                        local anyReady = false
+                        if prof.cooldowns then
+                            local now = time()
+                            for _, cd in pairs(prof.cooldowns) do
+                                hasTracked = true
+                                if (cd.expiresAt or 0) <= now then
+                                    anyReady = true
+                                end
+                            end
+                        end
+                        if hasTracked then
+                            if anyReady then
+                                pBtn.cdDot:SetTexture("Interface\\FriendsFrame\\StatusIcon-Online")
+                            else
+                                pBtn.cdDot:SetTexture("Interface\\FriendsFrame\\StatusIcon-Away")
+                            end
+                            pBtn.cdDot:Show()
+                        else
+                            pBtn.cdDot:Hide()
+                        end
+                    end
                     
                     pBtn:SetScript("OnClick", function(self)
                         AM.UI:ShowRecipes(row.charName, self.profName)
@@ -1157,6 +1406,7 @@ function AM.UI:RefreshData()
                     
                     pBtn:Show()
                 end
+
             end
             
             -- Check if auctions exist to show the button
@@ -1186,6 +1436,10 @@ function AM.UI:RefreshData()
             if charData.mailCount and charData.mailCount > 0 then
                 hasMail = true
             end
+            if charData.mailMoney and charData.mailMoney > 0 then
+                hasMail = true
+            end
+
             
             -- Check for expired auctions
             if charData.auctions then
@@ -1246,98 +1500,60 @@ SlashCmdList["ALTMANAGER"] = function(msg)
     AM.UI:ToggleMainFrame()
 end
 
--- Global Tooltip Injection for Alt Materials
-function AM.UI:InjectItemTooltip(tooltip)
-    if tooltip:IsForbidden() then return end
-    if tooltip.AM_Injected then return end
-    
-    local _, link = tooltip:GetItem()
-    if not link then return end
-    
-    local itemID = tonumber(string.match(link, "item:(%d+)"))
-    if not itemID then return end
-    
-    local ruleset = AM.DB:GetRuleset()
-    local faction = AM.DB:GetFaction()
-    
-    if not AltManagerDB[ruleset] or not AltManagerDB[ruleset][faction] then return end
-    
-    local totalOwned = 0
-    local locations = {}
-    
-    for cName, cData in pairs(AltManagerDB[ruleset][faction]) do
-        local bagCount = cData.bags and cData.bags[itemID] or 0
-        local bankCount = cData.bank and cData.bank[itemID] or 0
-        local charTotal = bagCount + bankCount
-        if charTotal > 0 then
-            totalOwned = totalOwned + charTotal
-            local locStr = {}
-            if bagCount > 0 then table.insert(locStr, "Bags: " .. bagCount) end
-            if bankCount > 0 then table.insert(locStr, "Bank: " .. bankCount) end
-            table.insert(locations, string.format("  > %s: %s", cName, table.concat(locStr, ", ")))
-        end
-    end
-    
-    if totalOwned > 0 then
-        tooltip:AddLine(" ")
-        tooltip:AddLine("AltManager:", 1, 0.82, 0)
-        for _, loc in ipairs(locations) do
-            tooltip:AddLine(loc, 1, 1, 1)
-        end
-        tooltip.AM_Injected = true
-    end
-end
-
-local function ClearInjection(tooltip)
-    tooltip.AM_Injected = nil
-end
-
-GameTooltip:HookScript("OnTooltipCleared", ClearInjection)
-ItemRefTooltip:HookScript("OnTooltipCleared", ClearInjection)
-
-if TooltipDataProcessor then
-    TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
-        if tooltip == GameTooltip or tooltip == ItemRefTooltip then
-            AM.UI:InjectItemTooltip(tooltip)
-        end
-    end)
-else
-    GameTooltip:HookScript("OnTooltipSetItem", function(self)
-        AM.UI:InjectItemTooltip(self)
-    end)
-    ItemRefTooltip:HookScript("OnTooltipSetItem", function(self)
-        AM.UI:InjectItemTooltip(self)
-    end)
-end
-
 -- Money Frame Injection for Alt Wealth Tracking
-local function InjectMoneyTooltip(frame)
-    if not frame then return end
-    GameTooltip:SetOwner(frame, "ANCHOR_RIGHT")
-    GameTooltip:AddLine("AltManager Wealth", 1, 0.82, 0)
+function AM.UI:PopulateWealthTooltip(tooltip)
+    if not tooltip then return end
+    tooltip:AddLine("AltManager Wealth", 1, 0.82, 0)
     
     local ruleset = AM.DB:GetRuleset()
     local faction = AM.DB:GetFaction()
-    if not AltManagerDB[ruleset] or not AltManagerDB[ruleset][faction] then return end
+    if not AltManagerDB or not AltManagerDB[ruleset] or not AltManagerDB[ruleset][faction] then return end
     
     local totalGold = 0
+    local totalMailGold = 0
+    local totalAuctionGold = 0
     local chars = {}
     for cName, cData in pairs(AltManagerDB[ruleset][faction]) do
-        table.insert(chars, {name = cName, money = cData.money or 0})
-        totalGold = totalGold + (cData.money or 0)
+        if type(cData) == "table" and not cData.isIgnored then
+            local m = cData.money or 0
+            table.insert(chars, {name = cName, class = cData.class, money = m})
+            totalGold = totalGold + m
+            totalMailGold = totalMailGold + (cData.mailMoney or 0)
+            if cData.auctions then
+                for _, auc in ipairs(cData.auctions) do
+                    totalAuctionGold = totalAuctionGold + (auc.buyout or 0)
+                end
+            end
+        end
     end
     table.sort(chars, function(a, b) return a.money > b.money end)
     
     for _, c in ipairs(chars) do
         if c.money > 0 then
-            GameTooltip:AddDoubleLine(c.name, FormatGold(c.money), 1, 1, 1, 1, 1, 1)
+            local cr, cg, cb = 1, 1, 1
+            local classColor = c.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[c.class]
+            if classColor then cr, cg, cb = classColor.r, classColor.g, classColor.b end
+            tooltip:AddDoubleLine(c.name, FormatGold(c.money), cr, cg, cb, 1, 1, 1)
         end
     end
     
-    GameTooltip:AddLine(" ")
-    GameTooltip:AddDoubleLine("Total Account Wealth:", FormatGold(totalGold), 0, 1, 0, 0, 1, 0)
+    tooltip:AddLine(" ")
+    tooltip:AddDoubleLine("Total Character Gold:", FormatGold(totalGold), 0, 1, 0, 0, 1, 0)
+    if totalMailGold > 0 then
+        tooltip:AddDoubleLine("Pending Mail Gold:", FormatGold(totalMailGold), 1, 0.82, 0, 1, 1, 1)
+    end
+    if totalAuctionGold > 0 then
+        tooltip:AddDoubleLine("Active Auctions (Buyout):", FormatGold(totalAuctionGold), 0.7, 0.7, 0.7, 1, 1, 1)
+    end
+end
+
+local function InjectMoneyTooltip(frame)
+    if not frame then return end
+    GameTooltip:SetOwner(frame, "ANCHOR_RIGHT")
+    AM.UI:PopulateWealthTooltip(GameTooltip)
     GameTooltip:Show()
 end
+
 
 local function HookFrameAndChildren(f)
     if not f or f.AM_Hooked then return end

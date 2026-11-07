@@ -196,7 +196,77 @@ local EQUIP_LOC_TO_SLOTS = {
     INVTYPE_RELIC = {18},
     INVTYPE_TABARD = {19},
 }
-local scanTooltip = CreateFrame("GameTooltip", "AltManagerScanTooltip", nil, "GameTooltipTemplate")
+local scanTooltip = (AM.GetScanTooltip and AM:GetScanTooltip()) or _G["AltManagerScanTooltip"] or CreateFrame("GameTooltip", "AltManagerScanTooltip", UIParent, "GameTooltipTemplate")
+scanTooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
+
+local function IsRedTooltipColor(r, g, b)
+    return r and g and b and (r > 0.85 and g < 0.25 and b < 0.25)
+end
+
+local function AM_HasRedEquippableRestriction(itemLink, bag, slot)
+    if C_TooltipInfo then
+        local data = nil
+        if bag and slot and C_TooltipInfo.GetBagItem then
+            data = C_TooltipInfo.GetBagItem(bag, slot)
+        elseif itemLink and C_TooltipInfo.GetHyperlink then
+            data = C_TooltipInfo.GetHyperlink(itemLink)
+        end
+        if data and data.lines then
+            for _, line in ipairs(data.lines) do
+                if line.leftColor and IsRedTooltipColor(line.leftColor.r, line.leftColor.g, line.leftColor.b) then
+                    return true
+                end
+                if line.rightColor and IsRedTooltipColor(line.rightColor.r, line.rightColor.g, line.rightColor.b) then
+                    return true
+                end
+            end
+        end
+    end
+    
+    scanTooltip:ClearLines()
+    scanTooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
+    local ok = false
+    if bag and slot then
+        ok = pcall(scanTooltip.SetBagItem, scanTooltip, bag, slot)
+    elseif itemLink then
+        ok = pcall(scanTooltip.SetHyperlink, scanTooltip, itemLink)
+    end
+    if ok then
+        local numLines = scanTooltip:NumLines()
+        for i = 2, numLines do
+            local leftFS = _G["AltManagerScanTooltipTextLeft" .. i]
+            if leftFS and leftFS:IsShown() and leftFS:GetText() then
+                local r, g, b = leftFS:GetTextColor()
+                if IsRedTooltipColor(r, g, b) then return true end
+            end
+            local rightFS = _G["AltManagerScanTooltipTextRight" .. i]
+            if rightFS and rightFS:IsShown() and rightFS:GetText() then
+                local r, g, b = rightFS:GetTextColor()
+                if IsRedTooltipColor(r, g, b) then return true end
+            end
+        end
+    end
+    return false
+end
+
+local function AM_GetPlayerExpectedArmorType()
+    local class = UnitClassBase and UnitClassBase("player")
+    local level = UnitLevel and UnitLevel("player") or 1
+    if class == "WARRIOR" or class == "PALADIN" then
+        return (level >= 40) and 4 or 3
+    elseif class == "HUNTER" or class == "SHAMAN" then
+        return (level >= 40) and 3 or 2
+    elseif class == "ROGUE" or class == "DRUID" or class == "MONK" or class == "DEMONHUNTER" then
+        return 2
+    elseif class == "DEATHKNIGHT" then
+        return 4
+    elseif class == "EVOKER" then
+        return 3
+    elseif class == "MAGE" or class == "PRIEST" or class == "WARLOCK" then
+        return 1
+    end
+    return -1
+end
 
 local function AM_GetEquippedItemLevel(equipLoc, itemClassID, itemSubclassID)
     local slots = EQUIP_LOC_TO_SLOTS[equipLoc]
@@ -228,6 +298,27 @@ local function AM_GetEquippedItemLevel(equipLoc, itemClassID, itemSubclassID)
                 has2H = true
                 mainHandILvl = ilvl
                 mainHandRarity = rarity
+            end
+        end
+    end
+    
+    -- When evaluating a 2H weapon against 1H + Offhand, use the highest of MH/OH so a 2H must beat both
+    if equipLoc == "INVTYPE_2HWEAPON" then
+        local mhLink = GetInventoryItemLink("player", 16)
+        local ohLink = GetInventoryItemLink("player", 17)
+        if mhLink and ohLink then
+            local mhIlvl, mhRarity, ohIlvl, ohRarity
+            if C_Item and C_Item.GetItemInfo then
+                _, _, mhRarity, mhIlvl = C_Item.GetItemInfo(mhLink)
+                _, _, ohRarity, ohIlvl = C_Item.GetItemInfo(ohLink)
+            elseif GetItemInfo then
+                _, _, mhRarity, mhIlvl = GetItemInfo(mhLink)
+                _, _, ohRarity, ohIlvl = GetItemInfo(ohLink)
+            end
+            local maxHandIlvl = math.max(mhIlvl or 0, ohIlvl or 0)
+            local maxHandRarity = math.max(mhRarity or 0, ohRarity or 0)
+            if maxHandIlvl > 0 then
+                return maxHandIlvl, maxHandRarity, -1
             end
         end
     end
@@ -267,6 +358,7 @@ local function AM_GetEquippedItemLevel(equipLoc, itemClassID, itemSubclassID)
     return lowestILvl, lowestRarity, equippedArmorType
 end
 
+
 local trashEventFrame = CreateFrame("Frame")
 trashEventFrame:RegisterEvent("MERCHANT_SHOW")
 trashEventFrame:SetScript("OnEvent", function()
@@ -289,7 +381,11 @@ end)
 
 function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSections, hideExtras)
     local win = CreateFrame("Frame", windowName, UIParent, "BasicFrameTemplateWithInset")
+    if windowName and UISpecialFrames then
+        tinsert(UISpecialFrames, windowName)
+    end
     win.hideExtras = hideExtras
+
     win:SetSize(400, 500)
     win:SetPoint("CENTER")
     win:Hide()
@@ -342,36 +438,46 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         win.currentSort = nil
         win:Update()
         if not win.selectedCharacter and C_Container then
-            -- 1. Backup and Clear Manual Trash Flags (Prevents Sort from wiping/misaligning slot flags)
-            local trashItems = {}
-            local player = AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""
+            local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
+            -- 1. Backup and Clear Manual Slot-Based Trash Flags only for the bags being sorted
+            -- (globalTrash for stackables is keyed by itemID and survives sorting automatically)
+            local trashSlotCounts = {}
             local function BackupAndClearTrash(bagList)
-                if not (AM.DB and AM.DB.IsTrash and AM.DB.ToggleTrash) then return end
+                if not (charDB and charDB.trashSlots) then return end
                 for _, b in ipairs(bagList) do
                     local slots = C_Container.GetContainerNumSlots(b)
                     if slots then
                         for s = 1, slots do
-                            local iID = C_Container.GetContainerItemID(b, s)
-                            if iID and AM.DB:IsTrash(player, b, s, iID) then
-                                trashItems[iID] = true
-                                AM.DB:ToggleTrash(b, s, iID) -- Untoggle flag on the pre-sort coordinate
+                            local key = b .. "_" .. s
+                            local trashedID = charDB.trashSlots[key]
+                            if trashedID then
+                                local iID = C_Container.GetContainerItemID(b, s)
+                                if iID == trashedID then
+                                    trashSlotCounts[iID] = (trashSlotCounts[iID] or 0) + 1
+                                end
+                                charDB.trashSlots[key] = nil
                             end
                         end
                     end
                 end
             end
 
-            -- Restore manual trash flags to their new coordinates based on itemID
+            -- Restore manual slot-based trash flags to their new coordinates up to the original count
             local function RestoreTrash(bagList)
-                if not (AM.DB and AM.DB.IsTrash and AM.DB.ToggleTrash) then return end
+                if not charDB then return end
+                charDB.trashSlots = charDB.trashSlots or {}
+                local remaining = {}
+                for id, cnt in pairs(trashSlotCounts) do remaining[id] = cnt end
                 for _, b in ipairs(bagList) do
                     local slots = C_Container.GetContainerNumSlots(b)
                     if slots then
                         for s = 1, slots do
                             local iID = C_Container.GetContainerItemID(b, s)
-                            if iID and trashItems[iID] then
-                                if not AM.DB:IsTrash(player, b, s, iID) then
-                                    AM.DB:ToggleTrash(b, s, iID)
+                            if iID and remaining[iID] and remaining[iID] > 0 then
+                                local key = b .. "_" .. s
+                                if not charDB.trashSlots[key] then
+                                    charDB.trashSlots[key] = iID
+                                    remaining[iID] = remaining[iID] - 1
                                 end
                             end
                         end
@@ -386,8 +492,14 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             elseif storageType == "bank" then
                 bagsToBackup = AM:GetLiveBankBags()
             elseif storageType == "combined" then
-                bagsToBackup = {0, 1, 2, 3, 4}
-                for _, bb in ipairs(AM:GetLiveBankBags()) do table.insert(bagsToBackup, bb) end
+                if button == "RightButton" then
+                    bagsToBackup = AM:GetLiveBankBags()
+                elseif IsShiftKeyDown and IsShiftKeyDown() then
+                    bagsToBackup = {0, 1, 2, 3, 4}
+                else
+                    bagsToBackup = {0, 1, 2, 3, 4}
+                    for _, bb in ipairs(AM:GetLiveBankBags()) do table.insert(bagsToBackup, bb) end
+                end
             end
             
             BackupAndClearTrash(bagsToBackup)
@@ -418,6 +530,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             end
         end
     end)
+
     btnAuto:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     
     if storageType == "combined" then
@@ -598,33 +711,13 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     moneyFrame:EnableMouse(true)
     moneyFrame:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("AltManager Wealth", 1, 0.82, 0)
-        
-        local ruleset = AM.DB and AM.DB.GetRuleset and AM.DB:GetRuleset()
-        local faction = AM.DB and AM.DB.GetFaction and AM.DB:GetFaction()
-        if not ruleset or not faction or not AM.DB.data[ruleset] or not AM.DB.data[ruleset][faction] then return end
-        
-        local totalGold = 0
-        local chars = {}
-        for cName, cData in pairs(AM.DB.data[ruleset][faction]) do
-            if not cData.isIgnored then
-                table.insert(chars, {name = cName, money = cData.money or 0})
-                totalGold = totalGold + (cData.money or 0)
-            end
+        if AM.UI and AM.UI.PopulateWealthTooltip then
+            AM.UI:PopulateWealthTooltip(GameTooltip)
         end
-        table.sort(chars, function(a, b) return a.money > b.money end)
-        
-        for _, c in ipairs(chars) do
-            if c.money > 0 then
-                GameTooltip:AddDoubleLine(c.name, AM_FormatGold(c.money), 1, 1, 1, 1, 1, 1)
-            end
-        end
-        
-        GameTooltip:AddLine(" ")
-        GameTooltip:AddDoubleLine("Total Account Wealth:", AM_FormatGold(totalGold), 0, 1, 0, 0, 1, 0)
         GameTooltip:Show()
     end)
     moneyFrame:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
     
     win.bgContainer = CreateFrame("Frame", nil, win)
     win.bgContainer:SetAllPoints()
@@ -807,6 +900,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 local typesToRead = {}
                 if storageType == "combined" then
                     table.insert(typesToRead, "bank")
+                    table.insert(typesToRead, "bankProfession")
                     table.insert(typesToRead, "bankQuiver")
                     table.insert(typesToRead, "bags")
                     table.insert(typesToRead, "quiver")
@@ -817,9 +911,11 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         table.insert(typesToRead, "quiver")
                         table.insert(typesToRead, "profession")
                     elseif storageType == "bank" then
+                        table.insert(typesToRead, "bankProfession")
                         table.insert(typesToRead, "bankQuiver")
                     end
                 end
+
                 
                 for _, sType in ipairs(typesToRead) do
                     local secItems = {}
@@ -866,6 +962,8 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         end
                     elseif sType == "profession" then
                         capacity = charDB.profCapacity or 4
+                    elseif sType == "bankProfession" and charDB.bankProfCapacity then
+                        capacity = charDB.bankProfCapacity
                     elseif sType == "quiver" and charDB.quiverCapacity then capacity = charDB.quiverCapacity
                     elseif sType == "bankQuiver" and charDB.bankQuiverCapacity then capacity = charDB.bankQuiverCapacity
                     end
@@ -879,7 +977,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     
                     if #secItems > 0 then
                         local sTitle = (sType == "bank") and "Cached Bank" 
-                            or ((sType == "profession") and "Cached Profession" 
+                            or ((sType == "profession" or sType == "bankProfession") and "Cached Profession" 
                             or ((sType == "quiver" or sType == "bankQuiver") and "Cached Quiver/Pouch" 
                             or ("Cached " .. titleText)))
                             
@@ -888,11 +986,12 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             bgR, bgG, bgB = 0.8, 0.8, 0.9
                         elseif sType == "bags" then
                             bgR, bgG, bgB = 1.0, 0.95, 0.5
-                        elseif sType == "profession" then
+                        elseif sType == "profession" or sType == "bankProfession" then
                             bgR, bgG, bgB = 0.4, 0.85, 0.4
                         elseif sType == "quiver" or sType == "bankQuiver" then
                             bgR, bgG, bgB = 0.4, 0.6, 1.0
                         end
+
                         
                         table.insert(allSectionsData, {
                             config = { title = sTitle, r = bgR, g = bgG, b = bgB, a = 0.3, alwaysShow = true },
@@ -1097,10 +1196,17 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     btn:SetAttribute("bag", item.bag)
                     btn:SetAttribute("slot", item.slot)
 
-                   local isNew = false
+                    local isNew = false
+                    local seenKey = nil
                     if isPlayerBags and not item.isEmpty then
-                        -- Ask the game's native bag cache if this specific slot has a new item
-                        if C_NewItems and C_NewItems.IsNewItem then
+                        local itemID = (item.info and item.info.itemID) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
+                        seenKey = AM:GetItemSeenKey(itemID, item.info, item.link)
+                        local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
+                        if seenKey and charDB and charDB.seenItems then
+                            if not charDB.seenItems[seenKey] then
+                                isNew = true
+                            end
+                        elseif C_NewItems and C_NewItems.IsNewItem then
                             isNew = C_NewItems.IsNewItem(item.bag, item.slot)
                         end
                     end
@@ -1114,13 +1220,21 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         btn.AM_NewItemGlow:SetVertexColor(1, 0.85, 0.2, 0.85)
                     end
 
-                   if not btn.AM_NewItemHooked then
+                    if not btn.AM_NewItemHooked then
                         btn:HookScript("OnEnter", function(self)
                             if self.AM_NewItemGlow and self.AM_NewItemGlow:IsShown() then
                                 self.AM_NewItemGlow:Hide()
                                 if self.NewItemTexture then self.NewItemTexture:Hide() end
                                 if self.newitemglowAnim and self.newitemglowAnim:IsPlaying() then
                                     self.newitemglowAnim:Stop()
+                                end
+                                
+                                if self.AM_SeenKey and type(self.AM_SeenKey) == "string" then
+                                    local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
+                                    if charDB then
+                                        charDB.seenItems = charDB.seenItems or {}
+                                        charDB.seenItems[self.AM_SeenKey] = true
+                                    end
                                 end
                                 
                                 -- Tell the game's cache to unflag this slot
@@ -1135,7 +1249,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     end
                     
                     if isNew then
-                        btn.AM_SeenKey = true
+                        btn.AM_SeenKey = seenKey or true
                         btn.AM_NewItemGlow:Show()
                         if btn.NewItemTexture then btn.NewItemTexture:Show() end
                         if btn.newitemglowAnim and not btn.newitemglowAnim:IsPlaying() then
@@ -1148,7 +1262,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         if btn.newitemglowAnim and btn.newitemglowAnim:IsPlaying() then
                             btn.newitemglowAnim:Stop()
                         end
-                        if C_NewItems and C_NewItems.RemoveNewItem then
+                        if isPlayerBags and C_NewItems and C_NewItems.RemoveNewItem then
                             C_NewItems.RemoveNewItem(item.bag, item.slot)
                         end
                     end
@@ -1173,7 +1287,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                                         if AM.DB and AM.DB.ToggleTrash then
                                             AM.DB:ToggleTrash(bID, sID, iID)
                                         end
-                                        if AM.BagUI then AM.BagUI:Update() end
+                                        win:Update()
                                     else
                                         print("|cffffff00AltManager|r: Cannot mark items with no sell value as trash.")
                                     end
@@ -1183,6 +1297,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         end)
                         btn.AM_TrashHooked = true
                     end
+
                     
                     if not btn.AM_CursorHooked then
                         btn:HookScript("OnEnter", function(self)
@@ -1358,7 +1473,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             usable = IsUsableItem(item.link)
                         end
                         
-                        if usable == false then
+                        if usable == false or AM_HasRedEquippableRestriction(item.link, item.bag, item.slot) then
                             isUsable = false
                         end
                     end
@@ -1376,19 +1491,20 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             if currentIlvl and ilvl > currentIlvl then
                                 isUpgrade = true
                                 
-                                -- Armor Downgrade Check: If we are wearing armor (classID == 4) and the bag item is a lower armor type, it's not an upgrade.
-                                -- (e.g., Bag item is Leather(2), but we are wearing Mail(3))
-                                if classID == 4 and equippedArmorType > 0 then
-                                    -- Exempt cosmetic/misc armor types like rings/trinkets/cloaks which don't have strict progression
-                                    if equipLoc ~= "INVTYPE_CLOAK" and equipLoc ~= "INVTYPE_FINGER" and equipLoc ~= "INVTYPE_TRINKET" and equipLoc ~= "INVTYPE_HOLDABLE" then
-                                        if subclassID < equippedArmorType then
-                                            isUpgrade = false
+                                -- Armor Downgrade Check: Compare against both currently worn armor type and class expected armor proficiency
+                                if classID == 4 then
+                                    local expectedArmorType = AM_GetPlayerExpectedArmorType()
+                                    local minArmorType = math.max(equippedArmorType or -1, expectedArmorType or -1)
+                                    if minArmorType > 0 then
+                                        -- Exempt cosmetic/misc armor types like rings/trinkets/cloaks/shields which don't use 1-4 armor progression
+                                        if equipLoc ~= "INVTYPE_CLOAK" and equipLoc ~= "INVTYPE_FINGER" and equipLoc ~= "INVTYPE_TRINKET" and equipLoc ~= "INVTYPE_HOLDABLE" and equipLoc ~= "INVTYPE_SHIELD" and equipLoc ~= "INVTYPE_NECK" and equipLoc ~= "INVTYPE_BODY" and equipLoc ~= "INVTYPE_TABARD" then
+                                            if subclassID and subclassID >= 1 and subclassID <= 4 and subclassID < minArmorType then
+                                                isUpgrade = false
+                                            end
                                         end
                                     end
                                 end
                                 
-                                -- Optional: If you want to allow a blue item to replace a purple item if the ilvl gap is huge, 
-                                -- you can adjust this rarity rule. For now, we enforce equal or greater rarity.
                                 if isUpgrade and currentRarity and item.rarity < currentRarity then
                                     -- Allow lower rarity ONLY if the ilvl difference is significant (e.g., +10 ilvl)
                                     if (ilvl - currentIlvl) < 10 then
@@ -1401,7 +1517,8 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                                 btn.UpgradeText:Show()
                             end
                         end
-                end
+                    end
+
             end
                 
                 local col = (i - 1) % COLUMNS

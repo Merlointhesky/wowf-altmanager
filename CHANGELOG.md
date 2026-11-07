@@ -80,6 +80,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.4] - 2026-11-07
+
+### Added
+- **Global Item Search Results Viewer**: Search items across all alts' bags, bank, and mail directly from the UI.
+- **Profession Cooldown Tracking**: Real-time tracking and expiration monitoring for daily profession cooldowns (Transmutes, Mooncloth, Cured Rugged Hide, Refined Deepsea Salt).
+- **Bank Profession Bag Support**: Extended bank storage tracking to include profession-specific bags and capacities.
+- **Mail Money Tracking**: Added tracking for pending currency and gold waiting in alt mailboxes.
+
+### Fixed
+- **Bag UI Interaction**: Fixed issue where bags would occasionally become blocked or unresponsive during specific inventory updates.
+- **Character Name Scoping**: Improved multi-word and last name handling using `GetFullPlayerName()` across auctions and viewers.
+- **Tooltip Cache Synchronization**: Improved cross-alt tooltip scanning and refresh timing.
+
+---
+
 ## [1.0.3] - 2026-10-22
 
 ### Bugfix
