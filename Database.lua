@@ -144,27 +144,54 @@ function AM.DB:Init()
                     
                     -- Cleanup duplicate profession bag items in regular bags table
                     for charName, charData in pairs(chars) do
-                        if type(charData) == "table" and charData.profession then
-                            if not charData.profCapacity or charData.profCapacity == 0 then
-                                local pCount = 0
-                                for _ in pairs(charData.profession) do pCount = pCount + 1 end
-                                charData.profCapacity = math.max(pCount, 4)
-                            end
-                            if charData.bags and not charData.profMigrated then
-                                charData.profMigrated = true
-                                for itemID, pCount in pairs(charData.profession) do
-                                    if charData.bags[itemID] then
-                                        charData.bags[itemID] = charData.bags[itemID] - pCount
-                                        if charData.bags[itemID] <= 0 then
-                                            charData.bags[itemID] = nil
+                        if type(charData) == "table" then
+                            if not charData.seenItemsMigratedV2 then
+                                local migratedSeen = {}
+                                if type(charData.seenItems) == "table" then
+                                    for k, v in pairs(charData.seenItems) do
+                                        if v then
+                                            local id = string.match(tostring(k), "stack:(%d+)") or string.match(tostring(k), "item:(%d+)")
+                                            if id then
+                                                migratedSeen["item:" .. id] = true
+                                            end
                                         end
                                     end
                                 end
-                                if charData.bagCapacity and charData.profCapacity and charData.bagCapacity > charData.profCapacity then
-                                    if charData.bagCapacity == 56 and charData.profCapacity == 4 then
-                                        charData.bagCapacity = 52
-                                    elseif charData.bagCapacity > 16 then
-                                        charData.bagCapacity = charData.bagCapacity - charData.profCapacity
+                                for _, storageKey in ipairs({"bags", "profession", "quiver"}) do
+                                    if type(charData[storageKey]) == "table" then
+                                        for itemID, count in pairs(charData[storageKey]) do
+                                            if count and count > 0 then
+                                                migratedSeen["item:" .. tostring(itemID)] = true
+                                            end
+                                        end
+                                    end
+                                end
+                                charData.seenItems = migratedSeen
+                                charData.seenItemsInitialized = true
+                            end
+
+                            if charData.profession then
+                                if not charData.profCapacity or charData.profCapacity == 0 then
+                                    local pCount = 0
+                                    for _ in pairs(charData.profession) do pCount = pCount + 1 end
+                                    charData.profCapacity = math.max(pCount, 4)
+                                end
+                                if charData.bags and not charData.profMigrated then
+                                    charData.profMigrated = true
+                                    for itemID, pCount in pairs(charData.profession) do
+                                        if charData.bags[itemID] then
+                                            charData.bags[itemID] = charData.bags[itemID] - pCount
+                                            if charData.bags[itemID] <= 0 then
+                                                charData.bags[itemID] = nil
+                                            end
+                                        end
+                                    end
+                                    if charData.bagCapacity and charData.profCapacity and charData.bagCapacity > charData.profCapacity then
+                                        if charData.bagCapacity == 56 and charData.profCapacity == 4 then
+                                            charData.bagCapacity = 52
+                                        elseif charData.bagCapacity > 16 then
+                                            charData.bagCapacity = charData.bagCapacity - charData.profCapacity
+                                        end
                                     end
                                 end
                             end
@@ -304,23 +331,15 @@ function AM:IsItemStackable(itemID, info)
     return maxStack > 1
 end
 
- function AM:GetItemSeenKey(itemID, info, link)
-    if not itemID then return nil end
-    local isStackable = AM:IsItemStackable(itemID, info)
-    
-    if isStackable then
-        return "stack:" .. itemID
-    else
-        -- Non-stackable items strip the volatile unique ID but keep enchant/gem data
-        if link then
-            local parts = {strsplit(":", link)}
-            if #parts >= 9 then
-                parts[9] = "0"
-            end
-            return table.concat(parts, ":")
-        end
-        return "item:" .. itemID
+function AM:GetItemSeenKey(itemID, info, link)
+    if not itemID and info and info.itemID then
+        itemID = info.itemID
     end
+    if not itemID and link then
+        itemID = tonumber(string.match(link, "item:(%d+)"))
+    end
+    if not itemID then return nil end
+    return "item:" .. tostring(itemID)
 end
 
 function AM.DB:GetCurrentCharacterDB()
@@ -457,14 +476,35 @@ function AM.DB:IsProfessionBag(bag)
     return false
 end
 
+function AM.DB:ArePlayerBagsLoaded()
+    if not self.inWorld then return false end
+    if not C_Container or not C_Container.GetContainerNumSlots then return false end
+    local bpSlots = C_Container.GetContainerNumSlots(0)
+    if not bpSlots or bpSlots <= 0 then return false end
+    local numBags = NUM_BAG_SLOTS or 4
+    for bag = 1, numBags do
+        local invID = ContainerIDToInventoryID and ContainerIDToInventoryID(bag)
+        local hasEquippedBag = invID and GetInventoryItemID and (GetInventoryItemID("player", invID) ~= nil)
+        if hasEquippedBag then
+            local slots = C_Container.GetContainerNumSlots(bag)
+            if not slots or slots <= 0 then
+                return false
+            end
+        end
+    end
+    return true
+end
+
 function AM.DB:UpdateBags()
+    if not self:ArePlayerBagsLoaded() then return end
+
     local charDB = self:GetCurrentCharacterDB()
-    charDB.bags = {}
-    charDB.quiver = {}
-    charDB.profession = {}
-    charDB.bagCapacity = 0
-    charDB.quiverCapacity = 0
-    charDB.profCapacity = 0
+    local newBags = {}
+    local newQuiver = {}
+    local newProfession = {}
+    local bagCapacity = 0
+    local quiverCapacity = 0
+    local profCapacity = 0
     
     local numBags = NUM_BAG_SLOTS or 4
     local reagentBag = (Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5
@@ -474,38 +514,42 @@ function AM.DB:UpdateBags()
     if reagentBag then table.insert(bagsToScan, reagentBag) end
     
     local activeSeenKeys = {}
+    local totalItemsFound = 0
     for _, bag in ipairs(bagsToScan) do
         local isQuiv = self:IsQuiver(bag)
         local isProf = self:IsProfessionBag(bag)
         local numSlots = C_Container.GetContainerNumSlots(bag)
         if numSlots and numSlots > 0 then
             if isQuiv then
-                charDB.quiverCapacity = charDB.quiverCapacity + numSlots
+                quiverCapacity = quiverCapacity + numSlots
             elseif isProf then
-                charDB.profCapacity = charDB.profCapacity + numSlots
+                profCapacity = profCapacity + numSlots
             else
-                charDB.bagCapacity = charDB.bagCapacity + numSlots
+                bagCapacity = bagCapacity + numSlots
             end
             
             for slot = 1, numSlots do
                 local info = C_Container.GetContainerItemInfo(bag, slot)
-                if info and info.hyperlink then
-                    local itemID = info.itemID
+                local itemID = (info and info.itemID) or (C_Container.GetContainerItemID and C_Container.GetContainerItemID(bag, slot))
+                if itemID then
+                    local stackCount = (info and info.stackCount) or 1
+                    local hyperlink = (info and info.hyperlink) or (C_Container.GetContainerItemLink and C_Container.GetContainerItemLink(bag, slot))
+                    totalItemsFound = totalItemsFound + 1
                     
-                    self:ItemStartsQuest(itemID, info.hyperlink, bag, slot)
+                    self:ItemStartsQuest(itemID, hyperlink, bag, slot)
                     
                     if isQuiv then
-                        if not charDB.quiver[itemID] then charDB.quiver[itemID] = 0 end
-                        charDB.quiver[itemID] = charDB.quiver[itemID] + info.stackCount
+                        if not newQuiver[itemID] then newQuiver[itemID] = 0 end
+                        newQuiver[itemID] = newQuiver[itemID] + stackCount
                     elseif isProf then
-                        if not charDB.profession[itemID] then charDB.profession[itemID] = 0 end
-                        charDB.profession[itemID] = charDB.profession[itemID] + info.stackCount
+                        if not newProfession[itemID] then newProfession[itemID] = 0 end
+                        newProfession[itemID] = newProfession[itemID] + stackCount
                     else
-                        if not charDB.bags[itemID] then charDB.bags[itemID] = 0 end
-                        charDB.bags[itemID] = charDB.bags[itemID] + info.stackCount
+                        if not newBags[itemID] then newBags[itemID] = 0 end
+                        newBags[itemID] = newBags[itemID] + stackCount
                     end
                     
-                    local seenKey = AM:GetItemSeenKey(itemID, info, info.hyperlink)
+                    local seenKey = AM:GetItemSeenKey(itemID, info, hyperlink)
                     if seenKey then
                         activeSeenKeys[seenKey] = true
                     end
@@ -514,15 +558,44 @@ function AM.DB:UpdateBags()
         end
     end
     
+    local keyRingSlots = C_Container.GetContainerNumSlots and C_Container.GetContainerNumSlots(-2)
+    if keyRingSlots and keyRingSlots > 0 then
+        for slot = 1, keyRingSlots do
+            local info = C_Container.GetContainerItemInfo(-2, slot)
+            local itemID = (info and info.itemID) or (C_Container.GetContainerItemID and C_Container.GetContainerItemID(-2, slot))
+            if itemID then
+                local seenKey = AM:GetItemSeenKey(itemID, info, info and info.hyperlink)
+                if seenKey then
+                    activeSeenKeys[seenKey] = true
+                end
+            end
+        end
+    end
+
+    -- Guard against early login scans where bag slots exist but item contents haven't streamed in yet
+    if not self.loginSettled and totalItemsFound == 0 and charDB.bags and next(charDB.bags) ~= nil then
+        return
+    end
+
+    charDB.bags = newBags
+    charDB.quiver = newQuiver
+    charDB.profession = newProfession
+    charDB.bagCapacity = bagCapacity
+    charDB.quiverCapacity = quiverCapacity
+    charDB.profCapacity = profCapacity
+    
     -- Cache management for seen items (only applies to player bags)
-    if not charDB.seenItems or not charDB.seenItemsInitialized then
-        charDB.seenItems = {}
+    if not charDB.seenItems or not charDB.seenItemsInitialized or not charDB.seenItemsMigratedV2 then
+        charDB.seenItems = charDB.seenItems or {}
         charDB.seenItemsInitialized = true
         for key in pairs(activeSeenKeys) do
             charDB.seenItems[key] = true
         end
-    else
-        -- Purge items that have been sold or deleted from bags
+        if self.loginSettled then
+            charDB.seenItemsMigratedV2 = true
+        end
+    elseif self.loginSettled then
+        -- Purge items that have been sold or deleted from bags (only after login bag loading has settled)
         for key in pairs(charDB.seenItems) do
             if not activeSeenKeys[key] then
                 charDB.seenItems[key] = nil
@@ -822,7 +895,6 @@ AM.Events["ADDON_LOADED"] = function(self, loadedAddon)
     if loadedAddon == addonName then
         AM.DB:Init()
         AM.DB:UpdateCharacterInfo()
-        AM.DB:UpdateBags()
         if AM.UI and AM.UI.LoadMinimapPosition then
             AM.UI:LoadMinimapPosition()
         end
@@ -946,7 +1018,18 @@ AM.Events["UPDATE_PENDING_MAIL"] = function(self)
 end
 
 AM.Events["PLAYER_ENTERING_WORLD"] = function(self)
+    AM.DB.inWorld = true
+    AM.DB.loginSettled = false
+    if C_Timer and C_Timer.After then
+        C_Timer.After(1.5, function()
+            AM.DB.loginSettled = true
+            AM.DB:UpdateBags()
+        end)
+    else
+        AM.DB.loginSettled = true
+    end
     AM.DB:UpdateCharacterInfo()
+    AM.DB:RequestUpdateBags()
     AM.DB:UpdateProfessions()
     AM.DB:UpdateRecipes()
     if HasNewMail then

@@ -812,7 +812,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                                     name = name,
                                     rarity = rarity,
                                     value = value,
-                                    isEmpty = (itemLink == nil),
+                                    isEmpty = (itemLink == nil and itemInfo == nil),
                                     isLive = true
                                 })
                             end
@@ -859,7 +859,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             name = name,
                             rarity = rarity,
                             value = value,
-                            isEmpty = (itemLink == nil),
+                            isEmpty = (itemLink == nil and itemInfo == nil),
                             isLive = true
                         })
                     end
@@ -1199,11 +1199,13 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     local isNew = false
                     local seenKey = nil
                     if isPlayerBags and not item.isEmpty then
-                        local itemID = (item.info and item.info.itemID) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
+                        local itemID = (item.info and item.info.itemID) or (C_Container and C_Container.GetContainerItemID and C_Container.GetContainerItemID(item.bag, item.slot)) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
                         seenKey = AM:GetItemSeenKey(itemID, item.info, item.link)
                         local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
                         if seenKey and charDB and charDB.seenItems then
-                            if not charDB.seenItems[seenKey] then
+                            if not charDB.seenItemsMigratedV2 then
+                                charDB.seenItems[seenKey] = true
+                            elseif not charDB.seenItems[seenKey] then
                                 isNew = true
                             end
                         elseif C_NewItems and C_NewItems.IsNewItem then

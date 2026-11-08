@@ -1,6 +1,6 @@
 # Forever Alt Manager
 
-**Version:** 1.0.4  
+**Version:** 1.0.5  
 **WoW Version:** WoW Forever Beta (v1.60.1)  
 **Interface:** `16001`  
 

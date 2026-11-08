@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-11-08
+
+### Fixed
+- **New Item Highlight Persistence Across Relogs**:
+  - Prevented `AM.DB:UpdateBags()` from executing prematurely during `ADDON_LOADED` before container data is loaded by the client, which previously caused `charDB.seenItems` to be wiped on relog.
+  - Added container readiness checks (`AM.DB:ArePlayerBagsLoaded()`) and a login settling guard in `PLAYER_ENTERING_WORLD` so `seenItems` is never purged while bag contents are still streaming from the server.
+  - Standardized `AM:GetItemSeenKey()` to use deterministic, cache-independent `item:<itemID>` keys and updated bag scanning to read `itemID` directly without requiring cached hyperlinks.
+  - Added automatic migration (`seenItemsMigratedV2`) to seed `seenItems` from saved bag, profession bag, and quiver inventories.
+
+---
+
 ## [1.0.4] - 2026-11-07
 
 ### Added
