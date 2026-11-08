@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] - 2026-11-08
+
+### Fixed
+- **Live Bag Updates During Combat**:
+  - Removed the `InCombatLockdown()` early return in `BagUI.lua` so bag contents, stack counts, item icons, quality borders, cooldown swirls, quest indicators, trash coins, upgrade arrows, new-item highlights, and gold/repair/trash totals always update live while in combat.
+  - Bound each `ContainerFrameItemButtonTemplate` button persistently to its `bag_slot` key (`win.slotButtons`) and pre-initialized bag slot buttons out of combat on `PLAYER_ENTERING_WORLD` and `BAG_UPDATE_DELAYED` so buttons are ready even when opening bags for the first time mid-combat.
+  - Guarded protected frame operations (`SetAttribute`, `SetParent`, `SetID`, `SetPoint`, `Show`/`Hide`, `SetSize`) during combat lockdown to prevent `ADDON_ACTION_BLOCKED` taint errors while updating all visual regions in-place.
+  - Added item cooldown swirl updates (`C_Container.GetContainerItemCooldown` / `CooldownFrame_Set`) and registered `ITEM_LOCK_CHANGED` and `PLAYER_EQUIPMENT_CHANGED` for immediate item lock and gear-upgrade feedback.
+
+---
+
 ## [1.0.5] - 2026-11-08
 
 ### Fixed

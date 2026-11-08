@@ -602,6 +602,17 @@ function AM.DB:UpdateBags()
             end
         end
     end
+
+    if AM.UI and AM.UI.AltInventoryWindow and AM.UI.AltInventoryWindow:IsShown() then
+        AM.UI.AltInventoryWindow:Update()
+    end
+    if AM.UI and AM.UI.ItemViewer and AM.UI.ItemViewer:IsShown() then
+        if AM.UI.ItemViewer.mode == "SEARCH" and AM.UI.ItemViewer.searchQuery then
+            AM.UI:ShowSearchResults(AM.UI.ItemViewer.searchQuery)
+        elseif AM.UI.ItemViewer.mode == "RECIPES" and AM.UI.ItemViewer.activeChar and AM.UI.ItemViewer.activeProf then
+            AM.UI:ShowRecipes(AM.UI.ItemViewer.activeChar, AM.UI.ItemViewer.activeProf)
+        end
+    end
 end
 
 function AM.DB:UpdateBank()

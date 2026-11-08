@@ -401,6 +401,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     win.title:SetText("Alt Manager - " .. titleText .. " (Live)")
     
     win.liveButtons = {}
+    win.slotButtons = {}
     win.altButtons = {}
     win.sectionBGs = {}
     win.currentSort = "default"
@@ -437,7 +438,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     local btnAuto = CreateIconButton(win, windowName.."SortAuto", "Interface\\Icons\\INV_Pet_Broom", "Auto Sort", "TOPLEFT", win, "TOPLEFT", 10, -60, function(self, button)
         win.currentSort = nil
         win:Update()
-        if not win.selectedCharacter and C_Container then
+        if not win.selectedCharacter and C_Container and not (InCombatLockdown and InCombatLockdown()) then
             local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
             -- 1. Backup and Clear Manual Slot-Based Trash Flags only for the bags being sorted
             -- (globalTrash for stackables is keyed by itemID and survives sorting automatically)
@@ -724,28 +725,51 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     win.bgContainer:SetFrameLevel(win:GetFrameLevel() + 2)
     
     win.bagDummies = {}
+    local function EnsureBagDummy(parentWin, bag)
+        if not parentWin.bagDummies[bag] then
+            local dummy = CreateFrame("Frame", nil, parentWin)
+            dummy:SetID(bag)
+            dummy:SetAllPoints()
+            dummy:SetFrameLevel(parentWin:GetFrameLevel() + 5)
+            dummy:Show()
+            parentWin.bagDummies[bag] = dummy
+        end
+        return parentWin.bagDummies[bag]
+    end
+    for b = -2, 12 do
+        EnsureBagDummy(win, b)
+    end
     if liveSections then
         for _, sec in ipairs(liveSections) do
             for _, bag in ipairs(sec.bags) do
-                local dummy = CreateFrame("Frame", nil, win)
-                dummy:SetID(bag)
-                dummy:SetAllPoints()
-                dummy:SetFrameLevel(win:GetFrameLevel() + 5)
-                dummy:Show()
-                win.bagDummies[bag] = dummy
+                EnsureBagDummy(win, bag)
             end
         end
     end
+
+    win.GetBagLayoutSignature = function(self)
+        if not self.liveSections or not C_Container or not C_Container.GetContainerNumSlots then return "" end
+        local parts = {}
+        for _, sec in ipairs(self.liveSections) do
+            local bagsToScan = (sec.title == "Bank") and AM:GetLiveBankBags() or sec.bags
+            for _, bag in ipairs(bagsToScan) do
+                local slots = C_Container.GetContainerNumSlots(bag) or 0
+                local q = (AM.DB and AM.DB.IsQuiver and AM.DB:IsQuiver(bag)) and "Q" or ""
+                local p = (AM.DB and AM.DB.IsProfessionBag and AM.DB:IsProfessionBag(bag)) and "P" or ""
+                table.insert(parts, bag .. ":" .. slots .. q .. p)
+            end
+        end
+        local reagentBag = (Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5
+        if reagentBag then
+            local rSlots = C_Container.GetContainerNumSlots(reagentBag) or 0
+            table.insert(parts, "R" .. reagentBag .. ":" .. rSlots)
+        end
+        return table.concat(parts, ",")
+    end
     
     win.Update = function(self)
-        -- ADDED: Prevent touching secure item buttons during combat lockdown to avoid taint blocks
-        if InCombatLockdown() then
-            if not self.pendingCombatUpdate then
-                self.pendingCombatUpdate = true
-                self:RegisterEvent("PLAYER_REGEN_ENABLED")
-            end
-            return
-        end
+        local inCombat = InCombatLockdown and InCombatLockdown()
+        local needsPostCombatLayout = false
         
         local isPlayerBags = (self.storageType == "bags" and not self.selectedCharacter)
         local allSectionsData = {}
@@ -768,14 +792,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         bagsToScan = AM:GetLiveBankBags()
                     end
                     for _, bag in ipairs(bagsToScan) do
-                        if not self.bagDummies[bag] then
-                            local dummy = CreateFrame("Frame", nil, self)
-                            dummy:SetID(bag)
-                            dummy:SetAllPoints()
-                            dummy:SetFrameLevel(self:GetFrameLevel() + 5)
-                            dummy:Show()
-                            self.bagDummies[bag] = dummy
-                        end
+                        EnsureBagDummy(self, bag)
                         local isQuiv = AM.DB and AM.DB.IsQuiver and AM.DB:IsQuiver(bag)
                         local isProf = AM.DB and AM.DB.IsProfessionBag and AM.DB:IsProfessionBag(bag)
                         local targetList = secItems
@@ -791,7 +808,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                                 local itemInfo = C_Container.GetContainerItemInfo(bag, slot)
                                 local itemLink = C_Container.GetContainerItemLink(bag, slot)
                                 
-                                local name, rarity, value = "", 0, 0
+                                local name, rarity, value = "", (itemInfo and itemInfo.quality) or 0, 0
                                 if itemLink then
                                     local itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice
                                     if C_Item and C_Item.GetItemInfo then
@@ -800,7 +817,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                                         itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(itemLink)
                                     end
                                     name = itemName or ""
-                                    rarity = itemQuality or 0
+                                    rarity = itemQuality or (itemInfo and itemInfo.quality) or 0
                                     value = sellPrice or 0
                                 end
                                 
@@ -826,20 +843,13 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             
             local reagentBag = (Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5
             if reagentBag then
-                if not self.bagDummies[reagentBag] then
-                    local dummy = CreateFrame("Frame", nil, self)
-                    dummy:SetID(reagentBag)
-                    dummy:SetAllPoints()
-                    dummy:SetFrameLevel(self:GetFrameLevel() + 5)
-                    dummy:Show()
-                    self.bagDummies[reagentBag] = dummy
-                end
+                EnsureBagDummy(self, reagentBag)
                 local reagentSlots = C_Container.GetContainerNumSlots(reagentBag)
                 if reagentSlots and reagentSlots > 0 then
                     for slot = 1, reagentSlots do
                         local itemInfo = C_Container.GetContainerItemInfo(reagentBag, slot)
                         local itemLink = C_Container.GetContainerItemLink(reagentBag, slot)
-                        local name, rarity, value = "", 0, 0
+                        local name, rarity, value = "", (itemInfo and itemInfo.quality) or 0, 0
                         if itemLink then
                             local itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice
                             if C_Item and C_Item.GetItemInfo then
@@ -848,7 +858,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                                 itemName, _, itemQuality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(itemLink)
                             end
                             name = itemName or ""
-                            rarity = itemQuality or 0
+                            rarity = itemQuality or (itemInfo and itemInfo.quality) or 0
                             value = sellPrice or 0
                         end
                         table.insert(profItems, {
@@ -1074,7 +1084,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             end
         end
         
-        for _, b in pairs(self.liveButtons) do b:Hide() end
+        local usedLiveButtons = {}
         for _, b in pairs(self.altButtons) do b:Hide() end
         for _, bg in pairs(self.sectionBGs) do bg:Hide() end
         
@@ -1168,7 +1178,6 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         local BUTTON_SIZE = 37
         local SPACING = 2
         
-        local btnLiveIndex = 1
         local btnAltIndex = 1
         local bgIndex = 1
         local yOffset = -60
@@ -1180,182 +1189,220 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             for i, item in ipairs(secData.items) do
                 local btn
                 if item.isLive then
-                    btn = self.liveButtons[btnLiveIndex]
+                    local slotKey = item.bag .. "_" .. item.slot
+                    btn = self.slotButtons[slotKey]
                     if not btn then
-                        btn = CreateFrame("ItemButton", windowName.."LiveBtn"..btnLiveIndex, self, "ContainerFrameItemButtonTemplate")
-                        self.liveButtons[btnLiveIndex] = btn
+                        if inCombat then
+                            needsPostCombatLayout = true
+                        else
+                            local dummy = EnsureBagDummy(self, item.bag)
+                            local newIdx = #self.liveButtons + 1
+                            btn = CreateFrame("ItemButton", windowName.."LiveBtn"..newIdx, dummy or self, "ContainerFrameItemButtonTemplate")
+                            self.slotButtons[slotKey] = btn
+                            self.liveButtons[newIdx] = btn
+                            btn:SetID(item.slot)
+                            btn:SetAttribute("bag", item.bag)
+                            btn:SetAttribute("slot", item.slot)
+                            btn.AM_Bag = item.bag
+                            btn.AM_Slot = item.slot
+                        end
                     end
-                    btnLiveIndex = btnLiveIndex + 1
                     
-                    local dummy = self.bagDummies[item.bag]
-                    if dummy then btn:SetParent(dummy) end
-                    btn:SetID(item.slot)
-                    
-                    -- ADDED: Explicitly pass the bag and slot to the secure handler 
-                    -- so it does not fall back to querying the tainted dummy parent
-                    btn:SetAttribute("bag", item.bag)
-                    btn:SetAttribute("slot", item.slot)
-
-                    local isNew = false
-                    local seenKey = nil
-                    if isPlayerBags and not item.isEmpty then
-                        local itemID = (item.info and item.info.itemID) or (C_Container and C_Container.GetContainerItemID and C_Container.GetContainerItemID(item.bag, item.slot)) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
-                        seenKey = AM:GetItemSeenKey(itemID, item.info, item.link)
-                        local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
-                        if seenKey and charDB and charDB.seenItems then
-                            if not charDB.seenItemsMigratedV2 then
-                                charDB.seenItems[seenKey] = true
-                            elseif not charDB.seenItems[seenKey] then
-                                isNew = true
+                    if btn then
+                        usedLiveButtons[btn] = true
+                        if not inCombat then
+                            local dummy = EnsureBagDummy(self, item.bag)
+                            if dummy and btn:GetParent() ~= dummy then
+                                btn:SetParent(dummy)
                             end
-                        elseif C_NewItems and C_NewItems.IsNewItem then
-                            isNew = C_NewItems.IsNewItem(item.bag, item.slot)
-                        end
-                    end
-
-                    if not btn.AM_NewItemGlow then
-                        btn.AM_NewItemGlow = btn:CreateTexture(nil, "OVERLAY", nil, 6)
-                        btn.AM_NewItemGlow:SetPoint("TOPLEFT", -3, 3)
-                        btn.AM_NewItemGlow:SetPoint("BOTTOMRIGHT", 3, -3)
-                        btn.AM_NewItemGlow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
-                        btn.AM_NewItemGlow:SetBlendMode("ADD")
-                        btn.AM_NewItemGlow:SetVertexColor(1, 0.85, 0.2, 0.85)
-                    end
-
-                    if not btn.AM_NewItemHooked then
-                        btn:HookScript("OnEnter", function(self)
-                            if self.AM_NewItemGlow and self.AM_NewItemGlow:IsShown() then
-                                self.AM_NewItemGlow:Hide()
-                                if self.NewItemTexture then self.NewItemTexture:Hide() end
-                                if self.newitemglowAnim and self.newitemglowAnim:IsPlaying() then
-                                    self.newitemglowAnim:Stop()
-                                end
-                                
-                                if self.AM_SeenKey and type(self.AM_SeenKey) == "string" then
-                                    local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
-                                    if charDB then
-                                        charDB.seenItems = charDB.seenItems or {}
-                                        charDB.seenItems[self.AM_SeenKey] = true
-                                    end
-                                end
-                                
-                                -- Tell the game's cache to unflag this slot
-                                local bID = self:GetParent():GetID()
-                                local sID = self:GetID()
-                                if C_NewItems and C_NewItems.RemoveNewItem then
-                                    C_NewItems.RemoveNewItem(bID, sID)
-                                end
+                            if btn:GetID() ~= item.slot then
+                                btn:SetID(item.slot)
                             end
-                        end)
-                        btn.AM_NewItemHooked = true
-                    end
-                    
-                    if isNew then
-                        btn.AM_SeenKey = seenKey or true
-                        btn.AM_NewItemGlow:Show()
-                        if btn.NewItemTexture then btn.NewItemTexture:Show() end
-                        if btn.newitemglowAnim and not btn.newitemglowAnim:IsPlaying() then
-                            btn.newitemglowAnim:Play()
+                            if btn.AM_Bag ~= item.bag then
+                                btn:SetAttribute("bag", item.bag)
+                                btn.AM_Bag = item.bag
+                            end
+                            if btn.AM_Slot ~= item.slot then
+                                btn:SetAttribute("slot", item.slot)
+                                btn.AM_Slot = item.slot
+                            end
                         end
-                    else
-                        btn.AM_SeenKey = nil
-                        btn.AM_NewItemGlow:Hide()
-                        if btn.NewItemTexture then btn.NewItemTexture:Hide() end
-                        if btn.newitemglowAnim and btn.newitemglowAnim:IsPlaying() then
-                            btn.newitemglowAnim:Stop()
+
+                        local isNew = false
+                        local seenKey = nil
+                        if isPlayerBags and not item.isEmpty then
+                            local itemID = (item.info and item.info.itemID) or (C_Container and C_Container.GetContainerItemID and C_Container.GetContainerItemID(item.bag, item.slot)) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
+                            seenKey = AM:GetItemSeenKey(itemID, item.info, item.link)
+                            local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
+                            if seenKey and charDB and charDB.seenItems then
+                                if not charDB.seenItemsMigratedV2 then
+                                    charDB.seenItems[seenKey] = true
+                                elseif not charDB.seenItems[seenKey] then
+                                    isNew = true
+                                end
+                            elseif C_NewItems and C_NewItems.IsNewItem then
+                                isNew = C_NewItems.IsNewItem(item.bag, item.slot)
+                            end
                         end
-                        if isPlayerBags and C_NewItems and C_NewItems.RemoveNewItem then
-                            C_NewItems.RemoveNewItem(item.bag, item.slot)
+
+                        if not btn.AM_NewItemGlow then
+                            btn.AM_NewItemGlow = btn:CreateTexture(nil, "OVERLAY", nil, 6)
+                            btn.AM_NewItemGlow:SetPoint("TOPLEFT", -3, 3)
+                            btn.AM_NewItemGlow:SetPoint("BOTTOMRIGHT", 3, -3)
+                            btn.AM_NewItemGlow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+                            btn.AM_NewItemGlow:SetBlendMode("ADD")
+                            btn.AM_NewItemGlow:SetVertexColor(1, 0.85, 0.2, 0.85)
                         end
-                    end
-                    if btn.BattlepayItemTexture then btn.BattlepayItemTexture:Hide() end
-                    if btn.flash then btn.flash:Hide() end
-                    
-                    if not btn.AM_TrashHooked then
-                        btn:HookScript("OnClick", function(self, button)
-                            if button == "RightButton" and IsAltKeyDown() then
-                                local bID = self:GetParent():GetID()
-                                local sID = self:GetID()
-                                local iID = C_Container.GetContainerItemID(bID, sID)
-                                if iID then
-                                    local _, _, _, _, _, _, _, _, _, _, sellPrice
-                                    if C_Item and C_Item.GetItemInfo then
-                                        _, _, _, _, _, _, _, _, _, _, sellPrice = C_Item.GetItemInfo(iID)
-                                    else
-                                        _, _, _, _, _, _, _, _, _, _, sellPrice = GetItemInfo(iID)
+
+                        if not btn.AM_NewItemHooked then
+                            btn:HookScript("OnEnter", function(self)
+                                if self.AM_NewItemGlow and self.AM_NewItemGlow:IsShown() then
+                                    self.AM_NewItemGlow:Hide()
+                                    if self.NewItemTexture then self.NewItemTexture:Hide() end
+                                    if self.newitemglowAnim and self.newitemglowAnim:IsPlaying() then
+                                        self.newitemglowAnim:Stop()
                                     end
                                     
-                                    if sellPrice and sellPrice > 0 then
-                                        if AM.DB and AM.DB.ToggleTrash then
-                                            AM.DB:ToggleTrash(bID, sID, iID)
+                                    if self.AM_SeenKey and type(self.AM_SeenKey) == "string" then
+                                        local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
+                                        if charDB then
+                                            charDB.seenItems = charDB.seenItems or {}
+                                            charDB.seenItems[self.AM_SeenKey] = true
                                         end
-                                        win:Update()
-                                    else
-                                        print("|cffffff00AltManager|r: Cannot mark items with no sell value as trash.")
+                                    end
+                                    
+                                    -- Tell the game's cache to unflag this slot
+                                    local bID = self:GetParent():GetID()
+                                    local sID = self:GetID()
+                                    if C_NewItems and C_NewItems.RemoveNewItem then
+                                        C_NewItems.RemoveNewItem(bID, sID)
                                     end
                                 end
-                                return
+                            end)
+                            btn.AM_NewItemHooked = true
+                        end
+                        
+                        if isNew then
+                            btn.AM_SeenKey = seenKey or true
+                            btn.AM_NewItemGlow:Show()
+                            if btn.NewItemTexture then btn.NewItemTexture:Show() end
+                            if btn.newitemglowAnim and not btn.newitemglowAnim:IsPlaying() then
+                                btn.newitemglowAnim:Play()
                             end
-                        end)
-                        btn.AM_TrashHooked = true
-                    end
-
-                    
-                    if not btn.AM_CursorHooked then
-                        btn:HookScript("OnEnter", function(self)
-                            if MerchantFrame and MerchantFrame:IsShown() then
-                                local bID = self:GetParent():GetID()
-                                local sID = self:GetID()
-                                if C_Container and C_Container.ShowContainerSellCursor then
-                                    C_Container.ShowContainerSellCursor(bID, sID)
-                                elseif ShowContainerSellCursor then
-                                    ShowContainerSellCursor(bID, sID)
+                        else
+                            btn.AM_SeenKey = nil
+                            btn.AM_NewItemGlow:Hide()
+                            if btn.NewItemTexture then btn.NewItemTexture:Hide() end
+                            if btn.newitemglowAnim and btn.newitemglowAnim:IsPlaying() then
+                                btn.newitemglowAnim:Stop()
+                            end
+                            if isPlayerBags and C_NewItems and C_NewItems.RemoveNewItem then
+                                C_NewItems.RemoveNewItem(item.bag, item.slot)
+                            end
+                        end
+                        if btn.BattlepayItemTexture then btn.BattlepayItemTexture:Hide() end
+                        if btn.flash then btn.flash:Hide() end
+                        
+                        if not btn.AM_TrashHooked then
+                            btn:HookScript("OnClick", function(self, button)
+                                if button == "RightButton" and IsAltKeyDown() then
+                                    local bID = self:GetParent():GetID()
+                                    local sID = self:GetID()
+                                    local iID = C_Container.GetContainerItemID(bID, sID)
+                                    if iID then
+                                        local _, _, _, _, _, _, _, _, _, _, sellPrice
+                                        if C_Item and C_Item.GetItemInfo then
+                                            _, _, _, _, _, _, _, _, _, _, sellPrice = C_Item.GetItemInfo(iID)
+                                        else
+                                            _, _, _, _, _, _, _, _, _, _, sellPrice = GetItemInfo(iID)
+                                        end
+                                        
+                                        if sellPrice and sellPrice > 0 then
+                                            if AM.DB and AM.DB.ToggleTrash then
+                                                AM.DB:ToggleTrash(bID, sID, iID)
+                                            end
+                                            win:Update()
+                                        else
+                                            print("|cffffff00AltManager|r: Cannot mark items with no sell value as trash.")
+                                        end
+                                    end
+                                    return
                                 end
+                            end)
+                            btn.AM_TrashHooked = true
+                        end
+
+                        
+                        if not btn.AM_CursorHooked then
+                            btn:HookScript("OnEnter", function(self)
+                                if MerchantFrame and MerchantFrame:IsShown() then
+                                    local bID = self:GetParent():GetID()
+                                    local sID = self:GetID()
+                                    if C_Container and C_Container.ShowContainerSellCursor then
+                                        C_Container.ShowContainerSellCursor(bID, sID)
+                                    elseif ShowContainerSellCursor then
+                                        ShowContainerSellCursor(bID, sID)
+                                    end
+                                end
+                            end)
+                            btn.AM_CursorHooked = true
+                        end
+                        
+                        if item.info then
+                            SetItemButtonTexture(btn, item.info.iconFileID)
+                            SetItemButtonCount(btn, item.info.stackCount)
+                            SetItemButtonQuality(btn, item.info.quality, item.link)
+                            SetItemButtonDesaturated(btn, item.info.isLocked or item.isFiltered)
+                            if item.isFiltered then btn:SetAlpha(0.2) else btn:SetAlpha(1.0) end
+                        else
+                            SetItemButtonTexture(btn, nil)
+                            SetItemButtonCount(btn, 0)
+                            SetItemButtonQuality(btn, nil, nil)
+                            SetItemButtonDesaturated(btn, false)
+                            btn:SetAlpha(1.0)
+                        end
+                        
+                        local cooldown = btn.Cooldown or (btn:GetName() and _G[btn:GetName() .. "Cooldown"])
+                        if cooldown then
+                            if item.info and C_Container and C_Container.GetContainerItemCooldown then
+                                local start, duration, enable = C_Container.GetContainerItemCooldown(item.bag, item.slot)
+                                if CooldownFrame_Set then
+                                    CooldownFrame_Set(cooldown, start, duration, enable)
+                                elseif CooldownFrame_SetTimer then
+                                    CooldownFrame_SetTimer(cooldown, start, duration, enable)
+                                end
+                            else
+                                cooldown:Hide()
                             end
-                        end)
-                        btn.AM_CursorHooked = true
-                    end
-                    
-                    if item.info then
-                        SetItemButtonTexture(btn, item.info.iconFileID)
-                        SetItemButtonCount(btn, item.info.stackCount)
-                        SetItemButtonQuality(btn, item.info.quality, item.link)
-                        SetItemButtonDesaturated(btn, item.info.isLocked or item.isFiltered)
-                        if item.isFiltered then btn:SetAlpha(0.2) else btn:SetAlpha(1.0) end
-                    else
-                        SetItemButtonTexture(btn, nil)
-                        SetItemButtonCount(btn, 0)
-                        SetItemButtonQuality(btn, nil, nil)
-                        SetItemButtonDesaturated(btn, false)
-                        btn:SetAlpha(1.0)
-                    end
-                    
-                    local startsQuest = false
-                    if not item.isEmpty then
-                        local itemID = (item.info and item.info.itemID) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
-                        if AM.DB and AM.DB.ItemStartsQuest then
-                            startsQuest = AM.DB:ItemStartsQuest(itemID, item.link, item.bag, item.slot)
                         end
-                    end
-                    
-                    if btn.IconQuestTexture then
-                        if btn.questIcon then btn.questIcon:Hide() end
-                        if startsQuest then
-                            btn.IconQuestTexture:SetTexture(TEXTURE_ITEM_QUEST_BANG or "Interface\\ContainerFrame\\UI-Icon-QuestBang")
-                            btn.IconQuestTexture:Show()
+                        
+                        local startsQuest = false
+                        if not item.isEmpty then
+                            local itemID = (item.info and item.info.itemID) or (item.link and tonumber(string.match(item.link, "item:(%d+)")))
+                            if AM.DB and AM.DB.ItemStartsQuest then
+                                startsQuest = AM.DB:ItemStartsQuest(itemID, item.link, item.bag, item.slot)
+                            end
+                        end
+                        
+                        if btn.IconQuestTexture then
+                            if btn.questIcon then btn.questIcon:Hide() end
+                            if startsQuest then
+                                btn.IconQuestTexture:SetTexture(TEXTURE_ITEM_QUEST_BANG or "Interface\\ContainerFrame\\UI-Icon-QuestBang")
+                                btn.IconQuestTexture:Show()
+                            else
+                                btn.IconQuestTexture:Hide()
+                            end
                         else
-                            btn.IconQuestTexture:Hide()
-                        end
-                    else
-                        if not btn.questIcon then
-                            btn.questIcon = btn:CreateTexture(nil, "OVERLAY", nil, 7)
-                            btn.questIcon:SetAllPoints(btn)
-                            btn.questIcon:SetTexture(TEXTURE_ITEM_QUEST_BANG or "Interface\\ContainerFrame\\UI-Icon-QuestBang")
-                        end
-                        if startsQuest then
-                            btn.questIcon:Show()
-                        else
-                            btn.questIcon:Hide()
+                            if not btn.questIcon then
+                                btn.questIcon = btn:CreateTexture(nil, "OVERLAY", nil, 7)
+                                btn.questIcon:SetAllPoints(btn)
+                                btn.questIcon:SetTexture(TEXTURE_ITEM_QUEST_BANG or "Interface\\ContainerFrame\\UI-Icon-QuestBang")
+                            end
+                            if startsQuest then
+                                btn.questIcon:Show()
+                            else
+                                btn.questIcon:Hide()
+                            end
                         end
                     end
                 else
@@ -1418,118 +1465,139 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     end
                 end
                 
-                if not btn.JunkIcon then
-                    btn.JunkIcon = btn:CreateTexture(nil, "OVERLAY")
-                    btn.JunkIcon:SetTexture("Interface\\BUTTONS\\UI-GroupLoot-Coin-Up")
-                    btn.JunkIcon:SetSize(16, 16)
-                    btn.JunkIcon:SetPoint("TOPLEFT", 1, -1)
-                end
-                
-                local iID = nil
-                if item.link then
-                    iID = tonumber(string.match(item.link, "item:(%d+)"))
-                end
-                
-                local isExplicitTrash = false
-                if iID and AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(win.selectedCharacter or (AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""), item.bag, item.slot, iID) then
-                    isExplicitTrash = true
-                end
-                
-                if (isExplicitTrash or (item.rarity and item.rarity == 0)) and not item.isEmpty then
-                    btn.JunkIcon:Show()
-                else
-                    btn.JunkIcon:Hide()
-                end
-                
-                if not btn.UpgradeText then
-                    btn.UpgradeText = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
-                    btn.UpgradeText:SetPoint("TOPLEFT", btn, "TOPLEFT", 1, -1)
-                    btn.UpgradeText:SetText("|cff00ff00^|r")
-                    local font, size, flags = btn.UpgradeText:GetFont()
-                    if font then btn.UpgradeText:SetFont(font, 18, "OUTLINE") end
-                end
-                
-                btn.UpgradeText:Hide()
-                if btn.icon then btn.icon:SetVertexColor(1, 1, 1) end
-                
-                if not win.selectedCharacter and item.link then
-                    local _, _, _, ilvl, reqLevel, _, _, _, equipLoc, _, _, classID, subclassID
-                    if C_Item and C_Item.GetItemInfo then
-                        _, _, _, ilvl, reqLevel, _, _, _, equipLoc, _, _, classID, subclassID = C_Item.GetItemInfo(item.link)
-                    elseif GetItemInfo then
-                        _, _, _, ilvl, reqLevel, _, _, _, equipLoc, _, _, classID, subclassID = GetItemInfo(item.link)
-                    end
-                    
-                    local isUsable = true
-                    if reqLevel and reqLevel > UnitLevel("player") then
-                        isUsable = false
-                    elseif classID == 2 and (subclassID == 14 or subclassID == 20) then
-                        isUsable = true
-                    elseif classID == 2 or classID == 4 then
-                        local usable = true
-                        if C_PlayerInfo and C_PlayerInfo.CanUseItem and iID then
-                            usable = C_PlayerInfo.CanUseItem(iID)
-                        elseif C_Item and C_Item.IsUsableItem then
-                            usable = C_Item.IsUsableItem(item.link)
-                        elseif IsUsableItem then
-                            usable = IsUsableItem(item.link)
-                        end
-                        
-                        if usable == false or AM_HasRedEquippableRestriction(item.link, item.bag, item.slot) then
-                            isUsable = false
-                        end
-                    end
-                    
-                    if not isUsable and btn.icon then
-                        btn.icon:SetVertexColor(1, 0.1, 0.1)
-                    end
-                    
-                    if ilvl and equipLoc and EQUIP_LOC_TO_SLOTS[equipLoc] and isUsable then
-                        local isProfessionTool = (classID == 2 and (subclassID == 14 or subclassID == 20))
-                        if not isProfessionTool then
-                            local currentIlvl, currentRarity, equippedArmorType = AM_GetEquippedItemLevel(equipLoc, classID, subclassID)
-                            
-                            local isUpgrade = false
-                            if currentIlvl and ilvl > currentIlvl then
-                                isUpgrade = true
-                                
-                                -- Armor Downgrade Check: Compare against both currently worn armor type and class expected armor proficiency
-                                if classID == 4 then
-                                    local expectedArmorType = AM_GetPlayerExpectedArmorType()
-                                    local minArmorType = math.max(equippedArmorType or -1, expectedArmorType or -1)
-                                    if minArmorType > 0 then
-                                        -- Exempt cosmetic/misc armor types like rings/trinkets/cloaks/shields which don't use 1-4 armor progression
-                                        if equipLoc ~= "INVTYPE_CLOAK" and equipLoc ~= "INVTYPE_FINGER" and equipLoc ~= "INVTYPE_TRINKET" and equipLoc ~= "INVTYPE_HOLDABLE" and equipLoc ~= "INVTYPE_SHIELD" and equipLoc ~= "INVTYPE_NECK" and equipLoc ~= "INVTYPE_BODY" and equipLoc ~= "INVTYPE_TABARD" then
-                                            if subclassID and subclassID >= 1 and subclassID <= 4 and subclassID < minArmorType then
-                                                isUpgrade = false
-                                            end
-                                        end
-                                    end
-                                end
-                                
-                                if isUpgrade and currentRarity and item.rarity < currentRarity then
-                                    -- Allow lower rarity ONLY if the ilvl difference is significant (e.g., +10 ilvl)
-                                    if (ilvl - currentIlvl) < 10 then
-                                        isUpgrade = false
-                                    end
-                                end
-                            end
-                            
-                            if isUpgrade then
-                                btn.UpgradeText:Show()
-                            end
-                        end
-                    end
-
-            end
-                
                 local col = (i - 1) % COLUMNS
                 local row = math.floor((i - 1) / COLUMNS)
                 rows = row + 1
                 
-                btn:ClearAllPoints()
-                btn:SetPoint("TOPLEFT", self, "TOPLEFT", 45 + col * (BUTTON_SIZE + SPACING), startY - row * (BUTTON_SIZE + SPACING))
-                btn:Show()
+                if btn then
+                    if not btn.JunkIcon then
+                        btn.JunkIcon = btn:CreateTexture(nil, "OVERLAY")
+                        btn.JunkIcon:SetTexture("Interface\\BUTTONS\\UI-GroupLoot-Coin-Up")
+                        btn.JunkIcon:SetSize(16, 16)
+                        btn.JunkIcon:SetPoint("TOPLEFT", 1, -1)
+                    end
+                    
+                    local iID = nil
+                    if item.link then
+                        iID = tonumber(string.match(item.link, "item:(%d+)"))
+                    end
+                    
+                    local isExplicitTrash = false
+                    if iID and AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(win.selectedCharacter or (AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""), item.bag, item.slot, iID) then
+                        isExplicitTrash = true
+                    end
+                    
+                    if (isExplicitTrash or (item.rarity and item.rarity == 0)) and not item.isEmpty then
+                        btn.JunkIcon:Show()
+                    else
+                        btn.JunkIcon:Hide()
+                    end
+                    
+                    if not btn.UpgradeText then
+                        btn.UpgradeText = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+                        btn.UpgradeText:SetPoint("TOPLEFT", btn, "TOPLEFT", 1, -1)
+                        btn.UpgradeText:SetText("|cff00ff00^|r")
+                        local font, size, flags = btn.UpgradeText:GetFont()
+                        if font then btn.UpgradeText:SetFont(font, 18, "OUTLINE") end
+                    end
+                    
+                    btn.UpgradeText:Hide()
+                    if btn.icon then btn.icon:SetVertexColor(1, 1, 1) end
+                    
+                    if not win.selectedCharacter and item.link then
+                        local _, _, _, ilvl, reqLevel, _, _, _, equipLoc, _, _, classID, subclassID
+                        if C_Item and C_Item.GetItemInfo then
+                            _, _, _, ilvl, reqLevel, _, _, _, equipLoc, _, _, classID, subclassID = C_Item.GetItemInfo(item.link)
+                        elseif GetItemInfo then
+                            _, _, _, ilvl, reqLevel, _, _, _, equipLoc, _, _, classID, subclassID = GetItemInfo(item.link)
+                        end
+                        
+                        local isUsable = true
+                        if reqLevel and reqLevel > UnitLevel("player") then
+                            isUsable = false
+                        elseif classID == 2 and (subclassID == 14 or subclassID == 20) then
+                            isUsable = true
+                        elseif classID == 2 or classID == 4 then
+                            local usable = true
+                            if C_PlayerInfo and C_PlayerInfo.CanUseItem and iID then
+                                usable = C_PlayerInfo.CanUseItem(iID)
+                            elseif C_Item and C_Item.IsUsableItem then
+                                usable = C_Item.IsUsableItem(item.link)
+                            elseif IsUsableItem then
+                                usable = IsUsableItem(item.link)
+                            end
+                            
+                            if usable == false or AM_HasRedEquippableRestriction(item.link, item.bag, item.slot) then
+                                isUsable = false
+                            end
+                        end
+                        
+                        if not isUsable and btn.icon then
+                            btn.icon:SetVertexColor(1, 0.1, 0.1)
+                        end
+                        
+                        if ilvl and equipLoc and EQUIP_LOC_TO_SLOTS[equipLoc] and isUsable then
+                            local isProfessionTool = (classID == 2 and (subclassID == 14 or subclassID == 20))
+                            if not isProfessionTool then
+                                local currentIlvl, currentRarity, equippedArmorType = AM_GetEquippedItemLevel(equipLoc, classID, subclassID)
+                                
+                                local isUpgrade = false
+                                if currentIlvl and ilvl > currentIlvl then
+                                    isUpgrade = true
+                                    
+                                    -- Armor Downgrade Check: Compare against both currently worn armor type and class expected armor proficiency
+                                    if classID == 4 then
+                                        local expectedArmorType = AM_GetPlayerExpectedArmorType()
+                                        local minArmorType = math.max(equippedArmorType or -1, expectedArmorType or -1)
+                                        if minArmorType > 0 then
+                                            -- Exempt cosmetic/misc armor types like rings/trinkets/cloaks/shields which don't use 1-4 armor progression
+                                            if equipLoc ~= "INVTYPE_CLOAK" and equipLoc ~= "INVTYPE_FINGER" and equipLoc ~= "INVTYPE_TRINKET" and equipLoc ~= "INVTYPE_HOLDABLE" and equipLoc ~= "INVTYPE_SHIELD" and equipLoc ~= "INVTYPE_NECK" and equipLoc ~= "INVTYPE_BODY" and equipLoc ~= "INVTYPE_TABARD" then
+                                                if subclassID and subclassID >= 1 and subclassID <= 4 and subclassID < minArmorType then
+                                                    isUpgrade = false
+                                                end
+                                            end
+                                        end
+                                    end
+                                    
+                                    if isUpgrade and currentRarity and item.rarity < currentRarity then
+                                        -- Allow lower rarity ONLY if the ilvl difference is significant (e.g., +10 ilvl)
+                                        if (ilvl - currentIlvl) < 10 then
+                                            isUpgrade = false
+                                        end
+                                    end
+                                end
+                                
+                                if isUpgrade then
+                                    btn.UpgradeText:Show()
+                                end
+                            end
+                        end
+                    end
+                    
+                    local targetX = 45 + col * (BUTTON_SIZE + SPACING)
+                    local targetY = startY - row * (BUTTON_SIZE + SPACING)
+                    if item.isLive then
+                        if not inCombat then
+                            if btn.AM_X ~= targetX or btn.AM_Y ~= targetY then
+                                btn:ClearAllPoints()
+                                btn:SetPoint("TOPLEFT", self, "TOPLEFT", targetX, targetY)
+                                btn.AM_X = targetX
+                                btn.AM_Y = targetY
+                            end
+                            if not btn:IsShown() then
+                                btn:Show()
+                            end
+                        else
+                            if btn.AM_X ~= targetX or btn.AM_Y ~= targetY or not btn:IsShown() then
+                                needsPostCombatLayout = true
+                            end
+                        end
+                    else
+                        btn:ClearAllPoints()
+                        btn:SetPoint("TOPLEFT", self, "TOPLEFT", targetX, targetY)
+                        btn:Show()
+                    end
+                end
             end
             
             if rows > 0 then
@@ -1554,17 +1622,58 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             end
         end
         
+        for _, b in pairs(self.liveButtons) do
+            if not usedLiveButtons[b] then
+                if not inCombat then
+                    if b:IsShown() then b:Hide() end
+                else
+                    if b:IsShown() then
+                        SetItemButtonTexture(b, nil)
+                        SetItemButtonCount(b, 0)
+                        SetItemButtonQuality(b, nil, nil)
+                        SetItemButtonDesaturated(b, false)
+                        b:SetAlpha(0)
+                        if b.JunkIcon then b.JunkIcon:Hide() end
+                        if b.UpgradeText then b.UpgradeText:Hide() end
+                        if b.AM_NewItemGlow then b.AM_NewItemGlow:Hide() end
+                        if b.IconQuestTexture then b.IconQuestTexture:Hide() end
+                        if b.questIcon then b.questIcon:Hide() end
+                        needsPostCombatLayout = true
+                    end
+                end
+            end
+        end
+        
         local minHeight = 260
         local finalHeight = math.abs(yOffset) + 20
         if finalHeight < minHeight then finalHeight = minHeight end
-        self:SetSize(COLUMNS * (BUTTON_SIZE + SPACING) + 60, finalHeight)
+        local targetWidth = COLUMNS * (BUTTON_SIZE + SPACING) + 60
+        if self.AM_Width ~= targetWidth or self.AM_Height ~= finalHeight then
+            if not inCombat then
+                self:SetSize(targetWidth, finalHeight)
+                self.AM_Width = targetWidth
+                self.AM_Height = finalHeight
+            else
+                needsPostCombatLayout = true
+            end
+        end
+        
+        if not inCombat and not self.selectedCharacter and (not self.currentSort or self.currentSort == "default") then
+            self.lastLayoutSignature = self:GetBagLayoutSignature()
+            self.layoutInitialized = true
+        end
+        
+        if needsPostCombatLayout and not self.pendingCombatUpdate then
+            self.pendingCombatUpdate = true
+            self:RegisterEvent("PLAYER_REGEN_ENABLED")
+        end
     end
     
     local updateTimer = nil
     local function RequestUpdate(delay)
         if not win:IsShown() then return end
         if updateTimer then return end
-        updateTimer = C_Timer.NewTimer(delay or 0.1, function()
+        updateTimer = C_Timer.NewTimer(delay or 0.05, function()
             updateTimer = nil
             if win:IsShown() then win:Update() end
         end)
@@ -1572,29 +1681,36 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     win.RequestUpdate = RequestUpdate
 
     win:SetScript("OnEvent", function(self, event, ...)
-        -- ADDED: Catch the end of combat to refresh safely
         if event == "PLAYER_REGEN_ENABLED" then
             self:UnregisterEvent("PLAYER_REGEN_ENABLED")
             self.pendingCombatUpdate = false
-            if self:IsShown() then self:Update() end
+            self:Update()
             return
         end
 
-        if not self:IsShown() then return end
+        if not self:IsShown() then
+            if (event == "PLAYER_ENTERING_WORLD" or event == "BAG_UPDATE_DELAYED") and self.storageType == "bags" and not (InCombatLockdown and InCombatLockdown()) then
+                local sig = self:GetBagLayoutSignature()
+                if not self.layoutInitialized or self.lastLayoutSignature ~= sig then
+                    self:Update()
+                end
+            end
+            return
+        end
         if event == "PLAYER_MONEY" then
             if not self.selectedCharacter then
                 self.moneyText:SetText(AM_FormatGold(GetMoney()))
             end
             return
         end
-        if event == "BAG_UPDATE_DELAYED" then
+        if event == "BAG_UPDATE_DELAYED" or event == "ITEM_LOCK_CHANGED" then
             if updateTimer then
                 updateTimer:Cancel()
                 updateTimer = nil
             end
             self:Update()
         else
-            RequestUpdate(0.1)
+            RequestUpdate(0.05)
         end
     end)
     if storageType == "bags" or storageType == "combined" then
@@ -1604,14 +1720,31 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         win:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
     end
     pcall(win.RegisterEvent, win, "BAG_UPDATE_DELAYED")
+    pcall(win.RegisterEvent, win, "ITEM_LOCK_CHANGED")
+    pcall(win.RegisterEvent, win, "PLAYER_EQUIPMENT_CHANGED")
+    pcall(win.RegisterEvent, win, "PLAYER_ENTERING_WORLD")
     win:RegisterEvent("BAG_UPDATE_COOLDOWN")
     win:RegisterEvent("GET_ITEM_INFO_RECEIVED")
     win:RegisterEvent("PLAYER_MONEY")
     
     win:SetScript("OnShow", function(self) self:Update() end)
     win:SetScript("OnHide", function(self)
+        local wasAlt = (self.selectedCharacter ~= nil)
+        local hadSearch = (self.searchQuery ~= "")
         self.selectedCharacter = nil
         self.searchQuery = ""
+        if searchBox and searchBox:GetText() ~= "" then
+            searchBox:SetText("")
+        end
+        if dd and dd:IsShown() then
+            dd:Hide()
+        end
+        if self.title then
+            self.title:SetText("Alt Manager - " .. titleText .. " (Live)")
+        end
+        if (wasAlt or hadSearch) and self.liveSections then
+            self:Update()
+        end
     end)
     
     table.insert(AM.Windows, win)
