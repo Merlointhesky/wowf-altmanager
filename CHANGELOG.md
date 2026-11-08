@@ -5,16 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-10-10
+## [1.0.4] - 2026-11-07
 
 ### Added
-- **Initial Release**:
-  - Realmless scoping support across rulesets (PvE, PvP, Hardcore, RP) and factions.
-  - Cross-character inventory (bags), bank, and currency tracking.
-  - Rest XP tracking and mathematical calculation of offline rested accumulation.
-  - Account wealth dashboard with per-character breakdown and total wealth footer.
-  - Item tooltip injection showing cross-alt ownership quantities across bags and bank.
-  - One-bag combined inventory viewer (`/am` or `/altmanager`) and minimap launcher icon.
+- **Global Item Search Results Viewer**:
+  - Interactive search window accessible via the main UI to search item names across all alts' bags, bank, and mailboxes.
+  - Dynamically updates as `GET_ITEM_INFO_RECEIVED` events populate the client cache.
+- **Enhanced Cross-Alt Tooltip Integration**:
+  - Added full item location breakdown to item tooltips: Bags, Bank, Profession Bags (`Prof:`), Quiver, Mail, and active Auction House listings (`AH:`).
+  - Displays a grand total line (`AltManager: Total: <count>`) across all tracked characters.
+  - Alt names are displayed in their respective class colors.
+  - Alts are sorted descending by quantity owned.
+  - Modern `TooltipDataProcessor` integration (`Enum.TooltipDataType.Item`) with backward-compatible `OnTooltipSetItem` fallbacks.
+- **Smart Gear Upgrade Scoring & Equip Restrictions**:
+  - Deep restriction scanning via `C_TooltipInfo` and hidden tooltip scanning to detect red-text restrictions (class, level, or stat requirements).
+  - Expected Armor Type checks (`AM_GetPlayerExpectedArmorType`) accounting for level 40 Mail/Plate transitions for Warriors, Paladins, Hunters, and Shamans.
+  - Two-handed weapon upgrade logic evaluating against both Main Hand and Off-hand, ensuring 2H weapons must beat the highest equipped hand.
+- **Profession Daily Cooldown Tracking**:
+  - Automatically tracks daily tradeskill cooldowns (Alchemy Transmutes, Tailoring Mooncloth, Leatherworking Cured Rugged Hide, Refined Deepsea Salt).
+  - Persists expiration timestamps and provides real-time readiness status across alts.
+- **Bank Profession Bag Support**:
+  - Extended bank scanning to track specialized profession bags (Herbalism, Mining, Engineering, Enchanting) and their separate capacity.
+- **Mailbox Gold Tracking**:
+  - Scans and aggregates pending gold waiting in alt mailboxes (`mailMoney`).
+
+### Fixed
+- **Bag UI Interaction & Lockups**:
+  - Resolved issues where player bags occasionally became blocked or unresponsive during item swaps and bag updates.
+- **Full Character Name Handling**:
+  - Implemented `AM.DB:GetFullPlayerName()` across character viewers, database lookups, and auction tracking to properly support characters with last names on WoW Forever.
+- **Tooltip Recursion Safeguard**:
+  - Added `AM_InjectedItem` tracking and `OnTooltipCleared` hooks to prevent duplicate injection lines or tooltip flicker.
+- **Auction Scanner Stability**:
+  - Replaced ad-hoc auction tooltip creation with reusable singleton scanner (`AM.AuctionScanTooltip`) parented to `WorldFrame`.
+
+---
+
+## [1.0.3] - 2026-10-22
+
+### Bugfix
+- Fixed issue with some bag actions being blocked.
+
+### Updated
+- New scoring system for suggested upgrades in player bags.
+
+---
+
+## [1.0.2] - 2026-10-21
+
+### Fixed
+- Auto sort no longer removes the "trash" flags the player has manually assigned.
+- Relogging on a character no longer marks the entire inventory as "new" (implemented persistent cache between sessions per character).
 
 ---
 
@@ -72,33 +113,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cleaned up redundant layout and duplicate UI definitions across `UI.lua` and `BagUI.lua`.
 
 ---
-## [1.0.2] - 2026-10-21
 
-### Fixed
-- Auto sort also removes the "trash" flags the player has added manually; this behavior has been corrected.
-- Relogging on a character no longer marks the entire inventory as "new". Implemented persistent cache between sessions per character to retain item newness state.
-
----
-
-## [1.0.4] - 2026-11-07
+## [1.0.0] - 2026-10-10
 
 ### Added
-- **Global Item Search Results Viewer**: Search items across all alts' bags, bank, and mail directly from the UI.
-- **Profession Cooldown Tracking**: Real-time tracking and expiration monitoring for daily profession cooldowns (Transmutes, Mooncloth, Cured Rugged Hide, Refined Deepsea Salt).
-- **Bank Profession Bag Support**: Extended bank storage tracking to include profession-specific bags and capacities.
-- **Mail Money Tracking**: Added tracking for pending currency and gold waiting in alt mailboxes.
-
-### Fixed
-- **Bag UI Interaction**: Fixed issue where bags would occasionally become blocked or unresponsive during specific inventory updates.
-- **Character Name Scoping**: Improved multi-word and last name handling using `GetFullPlayerName()` across auctions and viewers.
-- **Tooltip Cache Synchronization**: Improved cross-alt tooltip scanning and refresh timing.
-
----
-
-## [1.0.3] - 2026-10-22
-
-### Bugfix
-- fixing issue with some actions being blocked
-
-### Updated
-- new scoring system for suggested upgrades in bags.
+- **Initial Release**:
+  - Realmless scoping support across rulesets (PvE, PvP, Hardcore, RP) and factions.
+  - Cross-character inventory (bags), bank, and currency tracking.
+  - Rest XP tracking and mathematical calculation of offline rested accumulation.
+  - Account wealth dashboard with per-character breakdown and total wealth footer.
+  - Item tooltip injection showing cross-alt ownership quantities across bags and bank.
+  - One-bag combined inventory viewer (`/am` or `/altmanager`) and minimap launcher icon.
