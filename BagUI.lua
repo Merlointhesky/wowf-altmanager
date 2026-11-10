@@ -2,8 +2,47 @@ local addonName, AM = ...
 
 AM.Windows = {}
 
-local function CreateIconButton(parent, name, iconTexture, tooltip, point, relativeTo, relativePoint, x, y, onClick)
-    local btn = CreateFrame("Button", name, parent)
+-- Detect whether live container item buttons are protected in this client.
+-- If they are, they cannot be moved by insecure code during combat, so sort
+-- layouts are pre-computed out of combat and applied through a secure handler.
+local LIVE_BTN_PROTECTED = false
+do
+    local ok, probe = pcall(CreateFrame, "ItemButton", nil, UIParent, "ContainerFrameItemButtonTemplate")
+    if ok and probe then
+        LIVE_BTN_PROTECTED = probe.IsProtected and probe:IsProtected() and true or false
+        probe:Hide()
+    else
+        LIVE_BTN_PROTECTED = true
+    end
+end
+
+local function AM_InLockdown()
+    return LIVE_BTN_PROTECTED and InCombatLockdown and InCombatLockdown()
+end
+
+local SORT_MODES = { "default", "rarity", "value", "name", "trash" }
+
+-- Restricted snippet run by the secure sort buttons (works in combat).
+local SECURE_SORT_SNIPPET = [=[
+    local h = self:GetFrameRef("am_handler")
+    if not h then return end
+    local mode = self:GetAttribute("am_sortmode") or "default"
+    local cur = h:GetAttribute("cursort") or "default"
+    if mode ~= "default" and cur == mode then mode = "default" end
+    h:SetAttribute("cursort", mode)
+    local layout = h:GetAttribute("layout-" .. mode)
+    if not layout then return end
+    for idx, x, y in string.gmatch(layout, "(%d+):(%-?%d+):(%-?%d+)") do
+        local b = h:GetFrameRef("b" .. idx)
+        if b then
+            b:ClearAllPoints()
+            b:SetPoint("TOPLEFT", h, "TOPLEFT", tonumber(x), tonumber(y))
+        end
+    end
+]=]
+
+local function CreateIconButton(parent, name, iconTexture, tooltip, point, relativeTo, relativePoint, x, y, onClick, template)
+    local btn = CreateFrame("Button", name, parent, template)
     btn:SetSize(24, 24)
     btn:SetPoint(point, relativeTo, relativePoint, x, y)
     btn:SetNormalTexture(iconTexture)
@@ -19,7 +58,14 @@ local function CreateIconButton(parent, name, iconTexture, tooltip, point, relat
         GameTooltip:Show()
     end)
     btn:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
-    btn:SetScript("OnClick", onClick)
+    if onClick then
+        if template then
+            -- Secure templates own OnClick; run our insecure logic after the secure snippet
+            btn:HookScript("OnClick", onClick)
+        else
+            btn:SetScript("OnClick", onClick)
+        end
+    end
     return btn
 end
 
@@ -203,7 +249,27 @@ local function IsRedTooltipColor(r, g, b)
     return r and g and b and (r > 0.85 and g < 0.25 and b < 0.25)
 end
 
+local redRestrictionCache = {}
+local redRestrictionCacheLevel = nil
+
+local restrictionCacheEventFrame = CreateFrame("Frame")
+pcall(restrictionCacheEventFrame.RegisterEvent, restrictionCacheEventFrame, "SKILL_LINES_CHANGED")
+pcall(restrictionCacheEventFrame.RegisterEvent, restrictionCacheEventFrame, "SPELLS_CHANGED")
+pcall(restrictionCacheEventFrame.RegisterEvent, restrictionCacheEventFrame, "PLAYER_LEVEL_UP")
+restrictionCacheEventFrame:SetScript("OnEvent", function()
+    redRestrictionCache = {}
+end)
+
 local function AM_HasRedEquippableRestriction(itemLink, bag, slot)
+    local playerLevel = (UnitLevel and UnitLevel("player")) or 0
+    if redRestrictionCacheLevel ~= playerLevel then
+        redRestrictionCache = {}
+        redRestrictionCacheLevel = playerLevel
+    end
+    if itemLink and redRestrictionCache[itemLink] ~= nil then
+        return redRestrictionCache[itemLink]
+    end
+
     if C_TooltipInfo then
         local data = nil
         if bag and slot and C_TooltipInfo.GetBagItem then
@@ -214,11 +280,17 @@ local function AM_HasRedEquippableRestriction(itemLink, bag, slot)
         if data and data.lines then
             for _, line in ipairs(data.lines) do
                 if line.leftColor and IsRedTooltipColor(line.leftColor.r, line.leftColor.g, line.leftColor.b) then
+                    if itemLink then redRestrictionCache[itemLink] = true end
                     return true
                 end
                 if line.rightColor and IsRedTooltipColor(line.rightColor.r, line.rightColor.g, line.rightColor.b) then
+                    if itemLink then redRestrictionCache[itemLink] = true end
                     return true
                 end
+            end
+            if #data.lines > 1 then
+                if itemLink then redRestrictionCache[itemLink] = false end
+                return false
             end
         end
     end
@@ -237,13 +309,22 @@ local function AM_HasRedEquippableRestriction(itemLink, bag, slot)
             local leftFS = _G["AltManagerScanTooltipTextLeft" .. i]
             if leftFS and leftFS:IsShown() and leftFS:GetText() then
                 local r, g, b = leftFS:GetTextColor()
-                if IsRedTooltipColor(r, g, b) then return true end
+                if IsRedTooltipColor(r, g, b) then
+                    if itemLink then redRestrictionCache[itemLink] = true end
+                    return true
+                end
             end
             local rightFS = _G["AltManagerScanTooltipTextRight" .. i]
             if rightFS and rightFS:IsShown() and rightFS:GetText() then
                 local r, g, b = rightFS:GetTextColor()
-                if IsRedTooltipColor(r, g, b) then return true end
+                if IsRedTooltipColor(r, g, b) then
+                    if itemLink then redRestrictionCache[itemLink] = true end
+                    return true
+                end
             end
+        end
+        if numLines and numLines > 1 and itemLink then
+            redRestrictionCache[itemLink] = false
         end
     end
     return false
@@ -434,11 +515,44 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         end)
     end
     
+    -- Secure sort handler: lets sort buttons re-layout protected item buttons in combat
+    local sortHandler = nil
+    if LIVE_BTN_PROTECTED then
+        sortHandler = CreateFrame("Frame", nil, win, "SecureHandlerBaseTemplate")
+        sortHandler:SetAllPoints(win)
+        sortHandler:SetAttribute("cursort", "default")
+    end
+    win.sortHandler = sortHandler
+    win.sortLayouts = {}
+    win.sortLayoutStrs = {}
+    local sortTemplate = sortHandler and "SecureHandlerClickTemplate" or nil
+    local function MakeSortSecure(btn, mode)
+        if not sortHandler then return end
+        btn:SetAttribute("am_sortmode", mode)
+        btn:SetFrameRef("am_handler", sortHandler)
+        btn:SetAttribute("_onclick", SECURE_SORT_SNIPPET)
+    end
+
+    -- Change the active sort; in combat mirror the secure layout so post-combat diffing stays correct
+    win.SetSortMode = function(self, mode)
+        if mode == "default" then mode = nil end
+        self.currentSort = mode
+        if self.sortHandler and AM_InLockdown() then
+            local layout = self.sortLayouts[mode or "default"]
+            if layout then
+                for b, pos in pairs(layout) do
+                    b.AM_X = pos[1]
+                    b.AM_Y = pos[2]
+                end
+            end
+        end
+        self:Update()
+    end
+
     -- Sort Buttons in the column
     local btnAuto = CreateIconButton(win, windowName.."SortAuto", "Interface\\Icons\\INV_Pet_Broom", "Auto Sort", "TOPLEFT", win, "TOPLEFT", 10, -60, function(self, button)
-        win.currentSort = nil
-        win:Update()
-        if not win.selectedCharacter and C_Container and not (InCombatLockdown and InCombatLockdown()) then
+        win:SetSortMode(nil)
+        if not win.selectedCharacter and C_Container then
             local charDB = AM.DB and AM.DB.GetCurrentCharacterDB and AM.DB:GetCurrentCharacterDB()
             -- 1. Backup and Clear Manual Slot-Based Trash Flags only for the bags being sorted
             -- (globalTrash for stackables is keyed by itemID and survives sorting automatically)
@@ -505,20 +619,38 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             
             BackupAndClearTrash(bagsToBackup)
 
+            -- Restore trash flags as soon as the server finishes moving items (no fixed delay)
+            local function RestoreWhenSettled()
+                local checks = 0
+                local ticker
+                ticker = C_Timer.NewTicker(0.15, function()
+                    checks = checks + 1
+                    local locked = false
+                    for _, b in ipairs(bagsToBackup) do
+                        local n = C_Container.GetContainerNumSlots(b) or 0
+                        for s = 1, n do
+                            local info = C_Container.GetContainerItemInfo(b, s)
+                            if info and info.isLocked then locked = true break end
+                        end
+                        if locked then break end
+                    end
+                    if (checks >= 2 and not locked) or checks >= 40 then
+                        ticker:Cancel()
+                        RestoreTrash(bagsToBackup)
+                    end
+                end)
+            end
+
             -- 2. Sort the bags and call the restoration sequence 
             if storageType == "bags" then
                 if C_Container.SortBags then C_Container.SortBags() end
-                C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
             elseif storageType == "bank" then
                 if C_Container.SortBankBags then C_Container.SortBankBags() end
-                C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
             elseif storageType == "combined" then
                 if button == "RightButton" then
                     if C_Container.SortBankBags then C_Container.SortBankBags() end
-                    C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
                 elseif IsShiftKeyDown and IsShiftKeyDown() then
                     if C_Container.SortBags then C_Container.SortBags() end
-                    C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
                 else
                     if C_Container.SortBankBags then
                         C_Container.SortBankBags()
@@ -526,11 +658,12 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     if C_Container.SortBags then
                         C_Container.SortBags()
                     end
-                    C_Timer.After(0.5, function() RestoreTrash(bagsToBackup) end)
                 end
             end
+            RestoreWhenSettled()
         end
-    end)
+    end, sortTemplate)
+    MakeSortSecure(btnAuto, "default")
 
     btnAuto:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     
@@ -546,24 +679,24 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     end
     
     local btnRarity = CreateIconButton(win, windowName.."SortRarity", "Interface\\Icons\\INV_Misc_Gem_Diamond_02", "Sort by Rarity", "TOPLEFT", win, "TOPLEFT", 10, -90, function()
-        win.currentSort = (win.currentSort == "rarity") and nil or "rarity"
-        win:Update()
-    end)
+        win:SetSortMode((win.currentSort == "rarity") and nil or "rarity")
+    end, sortTemplate)
+    MakeSortSecure(btnRarity, "rarity")
     
     local btnValue = CreateIconButton(win, windowName.."SortValue", "Interface\\Icons\\INV_Misc_Coin_02", "Sort by Value", "TOPLEFT", win, "TOPLEFT", 10, -120, function()
-        win.currentSort = (win.currentSort == "value") and nil or "value"
-        win:Update()
-    end)
+        win:SetSortMode((win.currentSort == "value") and nil or "value")
+    end, sortTemplate)
+    MakeSortSecure(btnValue, "value")
     
     local btnName = CreateIconButton(win, windowName.."SortName", "Interface\\Icons\\INV_Misc_Note_01", "Sort by Name", "TOPLEFT", win, "TOPLEFT", 10, -150, function()
-        win.currentSort = (win.currentSort == "name") and nil or "name"
-        win:Update()
-    end)
+        win:SetSortMode((win.currentSort == "name") and nil or "name")
+    end, sortTemplate)
+    MakeSortSecure(btnName, "name")
     
     local btnTrashSort = CreateIconButton(win, windowName.."SortTrash", "Interface\\Icons\\INV_Box_03", "Trash Sort", "TOPLEFT", win, "TOPLEFT", 10, -180, function()
-        win.currentSort = (win.currentSort == "trash") and nil or "trash"
-        win:Update()
-    end)
+        win:SetSortMode((win.currentSort == "trash") and nil or "trash")
+    end, sortTemplate)
+    MakeSortSecure(btnTrashSort, "trash")
     
     win.btnRarity = btnRarity
     win.btnValue = btnValue
@@ -767,8 +900,56 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         return table.concat(parts, ",")
     end
     
+    local function SortItemList(items, mode)
+        if mode == "default" then mode = nil end
+        if mode == "name" then
+            table.sort(items, function(a, b)
+                if a.isEmpty and b.isEmpty then return false end
+                if a.isEmpty ~= b.isEmpty then return not a.isEmpty end
+                return a.name < b.name
+            end)
+        elseif mode == "value" then
+            table.sort(items, function(a, b)
+                if a.isEmpty and b.isEmpty then return false end
+                if a.isEmpty ~= b.isEmpty then return not a.isEmpty end
+                if a.value ~= b.value then return a.value > b.value end
+                return a.name < b.name
+            end)
+        elseif mode == "rarity" then
+            table.sort(items, function(a, b)
+                if a.isEmpty and b.isEmpty then return false end
+                if a.isEmpty ~= b.isEmpty then return not a.isEmpty end
+                if a.rarity ~= b.rarity then return a.rarity > b.rarity end
+                return a.name < b.name
+            end)
+        elseif mode == "trash" then
+            local charName = win.selectedCharacter or (AM.DB and AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or "")
+            -- Pre-compute groups once per item instead of inside the comparator
+            for _, it in ipairs(items) do
+                local id = nil
+                if it.link then id = tonumber(string.match(it.link, "item:(%d+)")) end
+                if not id and it.isLive and C_Container then id = C_Container.GetContainerItemID(it.bag, it.slot) end
+                local isTrash = id and (it.rarity == 0 or (AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(charName, it.bag, it.slot, id)))
+                it._grp = isTrash and 3 or (it.isEmpty and 2 or 1)
+            end
+            table.sort(items, function(a, b)
+                if a._grp ~= b._grp then return a._grp < b._grp end
+                if a.isEmpty and b.isEmpty then return false end
+                return (a.name or "") < (b.name or "")
+            end)
+        elseif not win.selectedCharacter then
+            -- Live default: slot order
+        else
+            table.sort(items, function(a, b) 
+                if a.isEmpty and b.isEmpty then return false end
+                if a.isEmpty ~= b.isEmpty then return not a.isEmpty end
+                return a.name < b.name 
+            end)
+        end
+    end
+
     win.Update = function(self)
-        local inCombat = InCombatLockdown and InCombatLockdown()
+        local inCombat = AM_InLockdown()
         local needsPostCombatLayout = false
         
         local isPlayerBags = (self.storageType == "bags" and not self.selectedCharacter)
@@ -1024,64 +1205,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                 end
             end
             
-            if self.currentSort == "name" then
-                table.sort(items, function(a, b)
-                    if a.isEmpty and b.isEmpty then return false end
-                    if a.isEmpty ~= b.isEmpty then return not a.isEmpty end
-                    return a.name < b.name
-                end)
-            elseif self.currentSort == "value" then
-                table.sort(items, function(a, b)
-                    if a.isEmpty and b.isEmpty then return false end
-                    if a.isEmpty ~= b.isEmpty then return not a.isEmpty end
-                    if a.value ~= b.value then return a.value > b.value end
-                    return a.name < b.name
-                end)
-            elseif self.currentSort == "rarity" then
-                table.sort(items, function(a, b)
-                    if a.isEmpty and b.isEmpty then return false end
-                    if a.isEmpty ~= b.isEmpty then return not a.isEmpty end
-                    if a.rarity ~= b.rarity then return a.rarity > b.rarity end
-                    return a.name < b.name
-                end)
-            elseif self.currentSort == "trash" then
-                table.sort(items, function(a, b)
-                    local aID = nil
-                    if a.link then aID = tonumber(string.match(a.link, "item:(%d+)")) end
-                    if not aID and a.isLive and C_Container then aID = C_Container.GetContainerItemID(a.bag, a.slot) end
-                    
-                    local bID = nil
-                    if b.link then bID = tonumber(string.match(b.link, "item:(%d+)")) end
-                    if not bID and b.isLive and C_Container then bID = C_Container.GetContainerItemID(b.bag, b.slot) end
-                    
-                    local aTrash = aID and (a.rarity == 0 or (AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(win.selectedCharacter or (AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""), a.bag, a.slot, aID)))
-                    local bTrash = bID and (b.rarity == 0 or (AM.DB and AM.DB.IsTrash and AM.DB:IsTrash(win.selectedCharacter or (AM.DB.GetFullPlayerName and AM.DB:GetFullPlayerName() or ""), b.bag, b.slot, bID)))
-                    
-                    local function GetGroup(item, isTrash)
-                        if isTrash then return 3 end
-                        if item.isEmpty then return 2 end
-                        return 1
-                    end
-                    
-                    local aGroup = GetGroup(a, aTrash)
-                    local bGroup = GetGroup(b, bTrash)
-                    
-                    if aGroup ~= bGroup then
-                        return aGroup < bGroup
-                    end
-                    
-                    if a.isEmpty and b.isEmpty then return false end
-                    return a.name < b.name
-                end)
-            elseif not self.selectedCharacter then
-                -- Live default
-            else
-                table.sort(items, function(a, b) 
-                    if a.isEmpty and b.isEmpty then return false end
-                    if a.isEmpty ~= b.isEmpty then return not a.isEmpty end
-                    return a.name < b.name 
-                end)
-            end
+            SortItemList(items, self.currentSort)
         end
         
         local usedLiveButtons = {}
@@ -1184,6 +1308,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         
         for _, secData in ipairs(allSectionsData) do
             local startY = yOffset
+            secData.startY = startY
             local rows = 0
             
             for i, item in ipairs(secData.items) do
@@ -1205,6 +1330,10 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             btn:SetAttribute("slot", item.slot)
                             btn.AM_Bag = item.bag
                             btn.AM_Slot = item.slot
+                            btn.AM_Index = newIdx
+                            if self.sortHandler then
+                                self.sortHandler:SetFrameRef("b" .. newIdx, btn)
+                            end
                         end
                     end
                     
@@ -1348,6 +1477,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             btn.AM_CursorHooked = true
                         end
                         
+                        btn.AM_Filtered = item.isFiltered and true or false
                         if item.info then
                             SetItemButtonTexture(btn, item.info.iconFileID)
                             SetItemButtonCount(btn, item.info.stackCount)
@@ -1622,6 +1752,43 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             end
         end
         
+        -- Pre-compute every sort layout so the secure handler can apply them in combat
+        if self.sortHandler and not inCombat and not self.selectedCharacter then
+            local layouts = {}
+            for _, mode in ipairs(SORT_MODES) do
+                local parts, map = {}, {}
+                for _, secData in ipairs(allSectionsData) do
+                    if secData.startY then
+                        local copy = {}
+                        for i, it in ipairs(secData.items) do copy[i] = it end
+                        SortItemList(copy, mode)
+                        for i, it in ipairs(copy) do
+                            if it.isLive then
+                                local b = self.slotButtons[it.bag .. "_" .. it.slot]
+                                if b and b.AM_Index then
+                                    local x = 45 + ((i - 1) % COLUMNS) * (BUTTON_SIZE + SPACING)
+                                    local y = secData.startY - math.floor((i - 1) / COLUMNS) * (BUTTON_SIZE + SPACING)
+                                    parts[#parts + 1] = b.AM_Index .. ":" .. x .. ":" .. y
+                                    map[b] = { x, y }
+                                end
+                            end
+                        end
+                    end
+                end
+                layouts[mode] = map
+                local s = table.concat(parts, ",")
+                if self.sortLayoutStrs[mode] ~= s then
+                    self.sortLayoutStrs[mode] = s
+                    self.sortHandler:SetAttribute("layout-" .. mode, s)
+                end
+            end
+            self.sortLayouts = layouts
+            local cur = self.currentSort or "default"
+            if self.sortHandler:GetAttribute("cursort") ~= cur then
+                self.sortHandler:SetAttribute("cursort", cur)
+            end
+        end
+        
         for _, b in pairs(self.liveButtons) do
             if not usedLiveButtons[b] then
                 if not inCombat then
@@ -1680,6 +1847,21 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     end
     win.RequestUpdate = RequestUpdate
 
+    -- Coalesce bursts of bag events (e.g. during a sort) into one update on the next frame
+    local nextFrameQueued = false
+    local function RequestNextFrameUpdate()
+        if nextFrameQueued then return end
+        nextFrameQueued = true
+        C_Timer.After(0, function()
+            nextFrameQueued = false
+            if updateTimer then
+                updateTimer:Cancel()
+                updateTimer = nil
+            end
+            if win:IsShown() then win:Update() end
+        end)
+    end
+
     win:SetScript("OnEvent", function(self, event, ...)
         if event == "PLAYER_REGEN_ENABLED" then
             self:UnregisterEvent("PLAYER_REGEN_ENABLED")
@@ -1689,7 +1871,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         end
 
         if not self:IsShown() then
-            if (event == "PLAYER_ENTERING_WORLD" or event == "BAG_UPDATE_DELAYED") and self.storageType == "bags" and not (InCombatLockdown and InCombatLockdown()) then
+            if (event == "PLAYER_ENTERING_WORLD" or event == "BAG_UPDATE_DELAYED") and self.storageType == "bags" and not AM_InLockdown() then
                 local sig = self:GetBagLayoutSignature()
                 if not self.layoutInitialized or self.lastLayoutSignature ~= sig then
                     self:Update()
@@ -1703,12 +1885,20 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             end
             return
         end
-        if event == "BAG_UPDATE_DELAYED" or event == "ITEM_LOCK_CHANGED" then
-            if updateTimer then
-                updateTimer:Cancel()
-                updateTimer = nil
+        if event == "ITEM_LOCK_CHANGED" then
+            -- Lightweight: only refresh the lock tint of the affected slot (sorting fires hundreds of these)
+            local bag, slot = ...
+            if bag and slot and not self.selectedCharacter then
+                local btn = self.slotButtons[bag .. "_" .. slot]
+                if btn and C_Container then
+                    local info = C_Container.GetContainerItemInfo(bag, slot)
+                    SetItemButtonDesaturated(btn, (info and info.isLocked) or btn.AM_Filtered)
+                end
             end
-            self:Update()
+            return
+        end
+        if event == "BAG_UPDATE_DELAYED" then
+            RequestNextFrameUpdate()
         else
             RequestUpdate(0.05)
         end

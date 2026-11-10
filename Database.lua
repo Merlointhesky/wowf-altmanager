@@ -12,6 +12,8 @@ end
 AM.GetScanTooltip = GetScanTooltip
 
 
+AM.DB.questCheckCache = {}
+
 function AM.DB:ItemStartsQuest(itemID, itemLink, bag, slot)
     if not itemID and itemLink then
         itemID = tonumber(string.match(itemLink, "item:(%d+)"))
@@ -20,8 +22,13 @@ function AM.DB:ItemStartsQuest(itemID, itemLink, bag, slot)
     AltManagerDB = AltManagerDB or {}
     AltManagerDB.QuestStarts = AltManagerDB.QuestStarts or {}
     
-    if itemID and AltManagerDB.QuestStarts[itemID] then
-        return true
+    if itemID then
+        if AltManagerDB.QuestStarts[itemID] then
+            return true
+        end
+        if self.questCheckCache[itemID] ~= nil then
+            return self.questCheckCache[itemID]
+        end
     end
     
     -- 1. Check C_Container.GetContainerItemQuestInfo (handles both table struct and multi-value returns)
@@ -36,7 +43,10 @@ function AM.DB:ItemStartsQuest(itemID, itemLink, bag, slot)
             isActive = isAct
         end
         if questId and not isActive then
-            if itemID then AltManagerDB.QuestStarts[itemID] = true end
+            if itemID then
+                AltManagerDB.QuestStarts[itemID] = true
+                self.questCheckCache[itemID] = true
+            end
             return true
         end
     end
@@ -62,7 +72,10 @@ function AM.DB:ItemStartsQuest(itemID, itemLink, bag, slot)
                        string.find(lower, "starts a quest", 1, true) or
                        string.find(lower, "startet eine quest", 1, true) or
                        string.find(lower, "lancer une quête", 1, true) then
-                        if itemID then AltManagerDB.QuestStarts[itemID] = true end
+                        if itemID then
+                            AltManagerDB.QuestStarts[itemID] = true
+                            self.questCheckCache[itemID] = true
+                        end
                         return true
                     end
                 end
@@ -73,12 +86,19 @@ function AM.DB:ItemStartsQuest(itemID, itemLink, bag, slot)
                             if (ITEM_STARTS_QUEST and string.find(arg.stringVal, ITEM_STARTS_QUEST, 1, true)) or
                                string.find(lower, "begins a quest", 1, true) or
                                string.find(lower, "starts a quest", 1, true) then
-                                if itemID then AltManagerDB.QuestStarts[itemID] = true end
+                                if itemID then
+                                    AltManagerDB.QuestStarts[itemID] = true
+                                    self.questCheckCache[itemID] = true
+                                end
                                 return true
                             end
                         end
                     end
                 end
+            end
+            if #data.lines > 1 then
+                if itemID then self.questCheckCache[itemID] = false end
+                return false
             end
         end
     end
@@ -107,10 +127,16 @@ function AM.DB:ItemStartsQuest(itemID, itemLink, bag, slot)
                    string.find(lower, "starts a quest", 1, true) or
                    string.find(lower, "startet eine quest", 1, true) or
                    string.find(lower, "lancer une quête", 1, true) then
-                    if itemID then AltManagerDB.QuestStarts[itemID] = true end
+                    if itemID then
+                        AltManagerDB.QuestStarts[itemID] = true
+                        self.questCheckCache[itemID] = true
+                    end
                     return true
                 end
             end
+        end
+        if numLines and numLines > 1 and itemID then
+            self.questCheckCache[itemID] = false
         end
     end
     
@@ -982,9 +1008,9 @@ AM.Events["PLAYERBANKSLOTS_CHANGED"] = function(self)
 end
 
 AM.Events["BAG_UPDATE_DELAYED"] = function(self)
-    AM.DB:UpdateBags()
+    AM.DB:RequestUpdateBags()
     if AM.UI and AM.UI.bankOpen then
-        AM.DB:UpdateBank()
+        AM.DB:RequestUpdateBank()
     end
 end
 
