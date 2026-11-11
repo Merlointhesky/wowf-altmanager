@@ -260,14 +260,15 @@ restrictionCacheEventFrame:SetScript("OnEvent", function()
     redRestrictionCache = {}
 end)
 
-local function AM_HasRedEquippableRestriction(itemLink, bag, slot)
+local function AM_HasRedEquippableRestriction(itemLink, bag, slot, ignoreRightColor)
     local playerLevel = (UnitLevel and UnitLevel("player")) or 0
     if redRestrictionCacheLevel ~= playerLevel then
         redRestrictionCache = {}
         redRestrictionCacheLevel = playerLevel
     end
-    if itemLink and redRestrictionCache[itemLink] ~= nil then
-        return redRestrictionCache[itemLink]
+    local cacheKey = itemLink and (itemLink .. (ignoreRightColor and ":nr" or ""))
+    if cacheKey and redRestrictionCache[cacheKey] ~= nil then
+        return redRestrictionCache[cacheKey]
     end
 
     if C_TooltipInfo then
@@ -280,16 +281,16 @@ local function AM_HasRedEquippableRestriction(itemLink, bag, slot)
         if data and data.lines then
             for _, line in ipairs(data.lines) do
                 if line.leftColor and IsRedTooltipColor(line.leftColor.r, line.leftColor.g, line.leftColor.b) then
-                    if itemLink then redRestrictionCache[itemLink] = true end
+                    if cacheKey then redRestrictionCache[cacheKey] = true end
                     return true
                 end
-                if line.rightColor and IsRedTooltipColor(line.rightColor.r, line.rightColor.g, line.rightColor.b) then
-                    if itemLink then redRestrictionCache[itemLink] = true end
+                if not ignoreRightColor and line.rightColor and IsRedTooltipColor(line.rightColor.r, line.rightColor.g, line.rightColor.b) then
+                    if cacheKey then redRestrictionCache[cacheKey] = true end
                     return true
                 end
             end
             if #data.lines > 1 then
-                if itemLink then redRestrictionCache[itemLink] = false end
+                if cacheKey then redRestrictionCache[cacheKey] = false end
                 return false
             end
         end
@@ -310,24 +311,94 @@ local function AM_HasRedEquippableRestriction(itemLink, bag, slot)
             if leftFS and leftFS:IsShown() and leftFS:GetText() then
                 local r, g, b = leftFS:GetTextColor()
                 if IsRedTooltipColor(r, g, b) then
-                    if itemLink then redRestrictionCache[itemLink] = true end
+                    if cacheKey then redRestrictionCache[cacheKey] = true end
                     return true
                 end
             end
-            local rightFS = _G["AltManagerScanTooltipTextRight" .. i]
-            if rightFS and rightFS:IsShown() and rightFS:GetText() then
-                local r, g, b = rightFS:GetTextColor()
-                if IsRedTooltipColor(r, g, b) then
-                    if itemLink then redRestrictionCache[itemLink] = true end
-                    return true
+            if not ignoreRightColor then
+                local rightFS = _G["AltManagerScanTooltipTextRight" .. i]
+                if rightFS and rightFS:IsShown() and rightFS:GetText() then
+                    local r, g, b = rightFS:GetTextColor()
+                    if IsRedTooltipColor(r, g, b) then
+                        if cacheKey then redRestrictionCache[cacheKey] = true end
+                        return true
+                    end
                 end
             end
         end
-        if numLines and numLines > 1 and itemLink then
-            redRestrictionCache[itemLink] = false
+        if numLines and numLines > 1 and cacheKey then
+            redRestrictionCache[cacheKey] = false
         end
     end
     return false
+end
+
+local function AM_CanPlayerWearArmor(subclassID, equipLoc)
+    -- Exempt cosmetic/misc armor types like rings/trinkets/cloaks/necks/shirts/tabards/frills
+    if equipLoc == "INVTYPE_CLOAK" or equipLoc == "INVTYPE_FINGER" or equipLoc == "INVTYPE_TRINKET" or equipLoc == "INVTYPE_NECK" or equipLoc == "INVTYPE_BODY" or equipLoc == "INVTYPE_TABARD" or equipLoc == "INVTYPE_HOLDABLE" then
+        return true
+    end
+    if not subclassID or subclassID == 0 or subclassID == 5 then -- 0: Misc, 5: Cosmetic
+        return true
+    end
+
+    local class = (UnitClassBase and UnitClassBase("player")) or (select(2, UnitClass("player")))
+    local level = (UnitLevel and UnitLevel("player")) or 1
+
+    -- Cloth (1): All classes can wear cloth
+    if subclassID == 1 then
+        return true
+    end
+
+    -- Leather (2): Wearable by all except Mage, Priest, Warlock
+    if subclassID == 2 then
+        if class == "MAGE" or class == "PRIEST" or class == "WARLOCK" then
+            return false
+        end
+        return true
+    end
+
+    -- Mail (3):
+    -- Warrior, Paladin, Death Knight, Evoker can wear Mail at all levels.
+    -- Hunter, Shaman can wear Mail starting at level 40.
+    if subclassID == 3 then
+        if class == "WARRIOR" or class == "PALADIN" or class == "DEATHKNIGHT" or class == "EVOKER" then
+            return true
+        elseif (class == "HUNTER" or class == "SHAMAN") then
+            return (level >= 40) or (IsSpellKnown and (IsSpellKnown(8737) or false))
+        else
+            return false
+        end
+    end
+
+    -- Plate (4):
+    -- Warrior, Paladin can wear Plate starting at level 40.
+    -- Death Knight can wear Plate.
+    if subclassID == 4 then
+        if class == "WARRIOR" or class == "PALADIN" then
+            return (level >= 40) or (IsSpellKnown and (IsSpellKnown(750) or false))
+        elseif class == "DEATHKNIGHT" then
+            return true
+        else
+            return false
+        end
+    end
+
+    -- Shield (6):
+    if subclassID == 6 then
+        return class == "WARRIOR" or class == "PALADIN" or class == "SHAMAN"
+    end
+
+    -- Relics (7=Libram, 8=Idol, 9=Totem, 10=Sigil, 11=Relic)
+    if subclassID == 7 then return class == "PALADIN" end
+    if subclassID == 8 then return class == "DRUID" end
+    if subclassID == 9 then return class == "SHAMAN" end
+    if subclassID == 10 then return class == "DEATHKNIGHT" end
+    if subclassID == 11 then
+        return class == "PALADIN" or class == "DRUID" or class == "SHAMAN" or class == "DEATHKNIGHT"
+    end
+
+    return true
 end
 
 local function AM_GetPlayerExpectedArmorType()
@@ -1647,17 +1718,14 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                             isUsable = false
                         elseif classID == 2 and (subclassID == 14 or subclassID == 20) then
                             isUsable = true
-                        elseif classID == 2 or classID == 4 then
-                            local usable = true
-                            if C_PlayerInfo and C_PlayerInfo.CanUseItem and iID then
-                                usable = C_PlayerInfo.CanUseItem(iID)
-                            elseif C_Item and C_Item.IsUsableItem then
-                                usable = C_Item.IsUsableItem(item.link)
-                            elseif IsUsableItem then
-                                usable = IsUsableItem(item.link)
+                        elseif classID == 4 then
+                            if not AM_CanPlayerWearArmor(subclassID, equipLoc) then
+                                isUsable = false
+                            elseif AM_HasRedEquippableRestriction(item.link, item.bag, item.slot, true) then
+                                isUsable = false
                             end
-                            
-                            if usable == false or AM_HasRedEquippableRestriction(item.link, item.bag, item.slot) then
+                        elseif classID == 2 then
+                            if AM_HasRedEquippableRestriction(item.link, item.bag, item.slot, false) then
                                 isUsable = false
                             end
                         end
