@@ -246,7 +246,72 @@ local scanTooltip = (AM.GetScanTooltip and AM:GetScanTooltip()) or _G["AltManage
 scanTooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
 
 local function IsRedTooltipColor(r, g, b)
+    if AM and AM.IsSecret and (AM:IsSecret(r) or AM:IsSecret(g) or AM:IsSecret(b)) then
+        return false
+    end
     return r and g and b and (r > 0.85 and g < 0.25 and b < 0.25)
+end
+
+local function StripColor(str)
+    if not str or type(str) ~= "string" then return "" end
+    return str:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|c%x%x%x%x%x%x", ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function GetLineText(line)
+    if not line then return "" end
+    if line.leftText and type(line.leftText) == "string" and line.leftText ~= "" then
+        return line.leftText
+    end
+    if line.args and type(line.args) == "table" then
+        for _, arg in ipairs(line.args) do
+            if type(arg) == "table" and type(arg.stringVal) == "string" and arg.stringVal ~= "" then
+                return arg.stringVal
+            end
+        end
+    end
+    return ""
+end
+
+local function GetLineRightText(line)
+    if not line then return "" end
+    if line.rightText and type(line.rightText) == "string" and line.rightText ~= "" then
+        return line.rightText
+    end
+    return ""
+end
+
+local function IsEquipRestrictionLine(text, playerLevel)
+    if not text or text == "" then return false end
+    local clean = StripColor(text)
+    if clean == "" then return false end
+    local lower = clean:lower()
+    
+    -- Exclude durability
+    if lower:find("durability") or lower:find("haltbarkeit") or lower:find("durabilité") then
+        return false
+    end
+    
+    -- Exclude sell price / cost
+    if lower:find("sell price") or lower:find("verkaufspreis") or lower:find("prix de vente") then
+        return false
+    end
+    
+    -- Exclude stat change comparisons (e.g. "-2 Strength", "replace this item")
+    if lower:find("replace this item") or lower:find("stat changes") or lower:find("^[%-%+]%d+") then
+        return false
+    end
+    
+    -- Level requirement check: only a restriction if player's level is less than required!
+    local reqLvl = lower:match("requires level (%d+)") or lower:match("benötigt stufe (%d+)") or lower:match("niveau requis (%d+)")
+    if reqLvl then
+        local num = tonumber(reqLvl)
+        if num and playerLevel and playerLevel >= num then
+            return false -- Player meets the level requirement!
+        end
+        return true -- Player is below the required level
+    end
+    
+    return true
 end
 
 local redRestrictionCache = {}
@@ -256,6 +321,7 @@ local restrictionCacheEventFrame = CreateFrame("Frame")
 pcall(restrictionCacheEventFrame.RegisterEvent, restrictionCacheEventFrame, "SKILL_LINES_CHANGED")
 pcall(restrictionCacheEventFrame.RegisterEvent, restrictionCacheEventFrame, "SPELLS_CHANGED")
 pcall(restrictionCacheEventFrame.RegisterEvent, restrictionCacheEventFrame, "PLAYER_LEVEL_UP")
+pcall(restrictionCacheEventFrame.RegisterEvent, restrictionCacheEventFrame, "PLAYER_ENTERING_WORLD")
 restrictionCacheEventFrame:SetScript("OnEvent", function()
     redRestrictionCache = {}
 end)
@@ -273,20 +339,30 @@ local function AM_HasRedEquippableRestriction(itemLink, bag, slot, ignoreRightCo
 
     if C_TooltipInfo then
         local data = nil
-        if bag and slot and C_TooltipInfo.GetBagItem then
+        if bag and slot and C_TooltipInfo.GetContainerItem then
+            data = C_TooltipInfo.GetContainerItem(bag, slot)
+        elseif bag and slot and C_TooltipInfo.GetBagItem then
             data = C_TooltipInfo.GetBagItem(bag, slot)
         elseif itemLink and C_TooltipInfo.GetHyperlink then
             data = C_TooltipInfo.GetHyperlink(itemLink)
         end
-        if data and data.lines then
+        if data and data.lines and not (AM and AM.IsSecret and AM:IsSecret(data.lines)) then
             for _, line in ipairs(data.lines) do
-                if line.leftColor and IsRedTooltipColor(line.leftColor.r, line.leftColor.g, line.leftColor.b) then
-                    if cacheKey then redRestrictionCache[cacheKey] = true end
-                    return true
-                end
-                if not ignoreRightColor and line.rightColor and IsRedTooltipColor(line.rightColor.r, line.rightColor.g, line.rightColor.b) then
-                    if cacheKey then redRestrictionCache[cacheKey] = true end
-                    return true
+                if line and not (AM and AM.IsSecret and AM:IsSecret(line)) then
+                    local leftText = GetLineText(line)
+                    if line.leftColor and IsRedTooltipColor(line.leftColor.r, line.leftColor.g, line.leftColor.b) then
+                        if IsEquipRestrictionLine(leftText, playerLevel) then
+                            if cacheKey then redRestrictionCache[cacheKey] = true end
+                            return true
+                        end
+                    end
+                    if not ignoreRightColor and line.rightColor and IsRedTooltipColor(line.rightColor.r, line.rightColor.g, line.rightColor.b) then
+                        local rightText = GetLineRightText(line)
+                        if IsEquipRestrictionLine(rightText, playerLevel) then
+                            if cacheKey then redRestrictionCache[cacheKey] = true end
+                            return true
+                        end
+                    end
                 end
             end
             if #data.lines > 1 then
@@ -299,29 +375,37 @@ local function AM_HasRedEquippableRestriction(itemLink, bag, slot, ignoreRightCo
     scanTooltip:ClearLines()
     scanTooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
     local ok = false
-    if bag and slot then
+    if bag and slot and scanTooltip.SetBagItem then
         ok = pcall(scanTooltip.SetBagItem, scanTooltip, bag, slot)
-    elseif itemLink then
+    elseif itemLink and scanTooltip.SetHyperlink then
         ok = pcall(scanTooltip.SetHyperlink, scanTooltip, itemLink)
     end
     if ok then
         local numLines = scanTooltip:NumLines()
-        for i = 2, numLines do
-            local leftFS = _G["AltManagerScanTooltipTextLeft" .. i]
-            if leftFS and leftFS:IsShown() and leftFS:GetText() then
-                local r, g, b = leftFS:GetTextColor()
-                if IsRedTooltipColor(r, g, b) then
-                    if cacheKey then redRestrictionCache[cacheKey] = true end
-                    return true
-                end
-            end
-            if not ignoreRightColor then
-                local rightFS = _G["AltManagerScanTooltipTextRight" .. i]
-                if rightFS and rightFS:IsShown() and rightFS:GetText() then
-                    local r, g, b = rightFS:GetTextColor()
+        if numLines and not (AM and AM.IsSecret and AM:IsSecret(numLines)) then
+            for i = 2, numLines do
+                local leftFS = _G["AltManagerScanTooltipTextLeft" .. i]
+                local leftText = leftFS and leftFS:GetText()
+                if leftFS and leftFS:IsShown() and leftText and not (AM and AM.IsSecret and AM:IsSecret(leftText)) then
+                    local r, g, b = leftFS:GetTextColor()
                     if IsRedTooltipColor(r, g, b) then
-                        if cacheKey then redRestrictionCache[cacheKey] = true end
-                        return true
+                        if IsEquipRestrictionLine(leftText, playerLevel) then
+                            if cacheKey then redRestrictionCache[cacheKey] = true end
+                            return true
+                        end
+                    end
+                end
+                if not ignoreRightColor then
+                    local rightFS = _G["AltManagerScanTooltipTextRight" .. i]
+                    local rightText = rightFS and rightFS:GetText()
+                    if rightFS and rightFS:IsShown() and rightText and not (AM and AM.IsSecret and AM:IsSecret(rightText)) then
+                        local r, g, b = rightFS:GetTextColor()
+                        if IsRedTooltipColor(r, g, b) then
+                            if IsEquipRestrictionLine(rightText, playerLevel) then
+                                if cacheKey then redRestrictionCache[cacheKey] = true end
+                                return true
+                            end
+                        end
                     end
                 end
             end

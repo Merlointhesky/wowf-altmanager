@@ -117,21 +117,23 @@ function AM.DB:ItemStartsQuest(itemID, itemLink, bag, slot)
     
     if ok then
         local numLines = tip:NumLines()
-        for i = 1, numLines do
-            local fontStr = _G["AltManagerScanTooltipTextLeft" .. i]
-            local text = fontStr and fontStr:GetText()
-            if text and type(text) == "string" then
-                local lower = text:lower()
-                if (ITEM_STARTS_QUEST and string.find(text, ITEM_STARTS_QUEST, 1, true)) or
-                   string.find(lower, "begins a quest", 1, true) or
-                   string.find(lower, "starts a quest", 1, true) or
-                   string.find(lower, "startet eine quest", 1, true) or
-                   string.find(lower, "lancer une quête", 1, true) then
-                    if itemID then
-                        AltManagerDB.QuestStarts[itemID] = true
-                        self.questCheckCache[itemID] = true
+        if numLines and not (AM and AM.IsSecret and AM:IsSecret(numLines)) then
+            for i = 1, numLines do
+                local fontStr = _G["AltManagerScanTooltipTextLeft" .. i]
+                local text = fontStr and fontStr:GetText()
+                if text and type(text) == "string" and not (AM and AM.IsSecret and AM:IsSecret(text)) then
+                    local lower = text:lower()
+                    if (ITEM_STARTS_QUEST and string.find(text, ITEM_STARTS_QUEST, 1, true)) or
+                       string.find(lower, "begins a quest", 1, true) or
+                       string.find(lower, "starts a quest", 1, true) or
+                       string.find(lower, "startet eine quest", 1, true) or
+                       string.find(lower, "lancer une quête", 1, true) then
+                        if itemID then
+                            AltManagerDB.QuestStarts[itemID] = true
+                            self.questCheckCache[itemID] = true
+                        end
+                        return true
                     end
-                    return true
                 end
             end
         end
@@ -688,7 +690,7 @@ end
 
 
 local function ExtractAuctionItemName(msg)
-    if not msg then return nil end
+    if not msg or (AM and AM.IsSecret and AM:IsSecret(msg)) then return nil end
     local link = string.match(msg, "|Hitem:.-|h%[(.-)%]|h")
     if link then return link end
     local bracketed = string.match(msg, "%[(.-)%]")
@@ -929,7 +931,7 @@ function AM.DB:GetRealtimeRestXP(charName)
 end
 
 AM.Events["ADDON_LOADED"] = function(self, loadedAddon)
-    if loadedAddon == addonName then
+    if loadedAddon and not (AM and AM.IsSecret and AM:IsSecret(loadedAddon)) and loadedAddon == addonName then
         AM.DB:Init()
         AM.DB:UpdateCharacterInfo()
         if AM.UI and AM.UI.LoadMinimapPosition then
@@ -1678,9 +1680,14 @@ function AM.DB:UpdateAuctions()
         local tipName, tipLink = tip:GetItem()
         local tipHeader = _G[tip:GetName() .. "TextLeft1"] and _G[tip:GetName() .. "TextLeft1"]:GetText()
         
+        if tipLink and AM and AM.IsSecret and AM:IsSecret(tipLink) then tipLink = nil end
+        if tipName and AM and AM.IsSecret and AM:IsSecret(tipName) then tipName = nil end
+        if tipHeader and AM and AM.IsSecret and AM:IsSecret(tipHeader) then tipHeader = nil end
+
         local link = tipLink
         if not link and GetAuctionItemLink then
             link = GetAuctionItemLink(aucType, index)
+            if link and AM and AM.IsSecret and AM:IsSecret(link) then link = nil end
         end
         
         local itemID = nil
@@ -1895,17 +1902,28 @@ AM.Events["AUCTION_HOUSE_CLOSED"] = function(self)
 end
 
 AM.Events["UI_ERROR_MESSAGE"] = function(self, arg1, arg2)
-    local msg = (type(arg1) == "string" and arg1) or (type(arg2) == "string" and arg2)
-    local errType = (type(arg1) == "number" and arg1) or nil
+    local isSec1 = AM and AM.IsSecret and AM:IsSecret(arg1)
+    local isSec2 = AM and AM.IsSecret and AM:IsSecret(arg2)
+    local msg = (not isSec1 and type(arg1) == "string" and arg1) or (not isSec2 and type(arg2) == "string" and arg2)
+    local errType = (not isSec1 and type(arg1) == "number" and arg1) or nil
     
     if (msg and (msg == ERR_AUCTION_STARTED or string.find(msg, "Auction created") or (ERR_AUCTION_STARTED and string.find(msg, ERR_AUCTION_STARTED))))
        or (errType and LE_GAME_ERR_AUCTION_STARTED and errType == LE_GAME_ERR_AUCTION_STARTED) then
+        AM.DB:OnAuctionCreated()
+    elseif (isSec1 or isSec2) and AM.DB.pendingAuction and (time() - (AM.DB.pendingAuction.postedTime or 0)) < 15 then
         AM.DB:OnAuctionCreated()
     end
 end
 
 AM.Events["CHAT_MSG_SYSTEM"] = function(self, msg)
     if not msg then return end
+    if AM and AM.IsSecret and AM:IsSecret(msg) then
+        if AM.DB.pendingAuction and (time() - (AM.DB.pendingAuction.postedTime or 0)) < 15 then
+            AM.DB:OnAuctionCreated()
+        end
+        return
+    end
+
     if msg == ERR_AUCTION_STARTED or string.find(msg, "Auction created") or (ERR_AUCTION_STARTED and string.find(msg, ERR_AUCTION_STARTED)) then
         AM.DB:OnAuctionCreated()
         return

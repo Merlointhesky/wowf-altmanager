@@ -2,6 +2,17 @@ local addonName, AM = ...
 AM.Core = CreateFrame("Frame")
 AM.Events = {}
 
+function AM:IsSecret(v)
+    if v == nil then return false end
+    local issecret = rawget(_G, "issecretvalue") or issecretvalue
+    if issecret and issecret(v) then return true end
+    local issectbl = rawget(_G, "issecrettable") or issecrettable
+    if issectbl and issectbl(v) then return true end
+    local canaccess = rawget(_G, "canaccessvalue") or canaccessvalue
+    if canaccess and not canaccess(v) then return true end
+    return false
+end
+
 function AM.Core:OnEvent(event, ...)
     if AM.Events[event] then
         AM.Events[event](self, ...)

@@ -94,7 +94,7 @@ if ItemRefTooltip then ItemRefTooltip:HookScript("OnTooltipCleared", ClearToolti
 
 if TooltipDataProcessor and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Item then
     TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
-        if data and data.id then
+        if data and data.id and not (AM and AM.IsSecret and AM:IsSecret(data.id)) then
             AddItemDataToTooltip(tooltip, data.id)
         end
     end)
@@ -102,7 +102,7 @@ else
     -- Fallback for environments without TooltipDataProcessor
     local function OnTooltipSetItem(tooltip)
         local _, link = tooltip:GetItem()
-        if link then
+        if link and not (AM and AM.IsSecret and AM:IsSecret(link)) then
             local itemID = tonumber(string.match(link, "item:(%d+)"))
             if itemID then
                 AddItemDataToTooltip(tooltip, itemID)
