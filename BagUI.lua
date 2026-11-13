@@ -280,29 +280,72 @@ local function GetLineRightText(line)
     return ""
 end
 
-local function IsEquipRestrictionLine(text, playerLevel)
+local function IsEquipRestrictionLine(text, playerLevel, itemReqLevel, isWeaponSubclassCheck)
     if not text or text == "" then return false end
     local clean = StripColor(text)
     if clean == "" then return false end
     local lower = clean:lower()
     
-    -- Exclude durability
-    if lower:find("durability") or lower:find("haltbarkeit") or lower:find("durabilité") then
+    -- 1. Exclude binding lines (BoE, BoP, Quest, Soulbound, Account-bound)
+    if lower:find("bind") or lower:find("bound") or lower:find("gebunden") or lower:find("li[eé]") or lower:find("liga") then
+        return false
+    end
+    if (ITEM_BIND_ON_EQUIP and lower:find(StripColor(ITEM_BIND_ON_EQUIP):lower(), 1, true))
+       or (ITEM_BIND_ON_PICKUP and lower:find(StripColor(ITEM_BIND_ON_PICKUP):lower(), 1, true))
+       or (ITEM_BIND_ON_USE and lower:find(StripColor(ITEM_BIND_ON_USE):lower(), 1, true))
+       or (ITEM_SOULBOUND and lower:find(StripColor(ITEM_SOULBOUND):lower(), 1, true))
+       or (ITEM_BIND_TO_ACCOUNT and lower:find(StripColor(ITEM_BIND_TO_ACCOUNT):lower(), 1, true))
+       or (ITEM_BIND_TO_BNETACCOUNT and lower:find(StripColor(ITEM_BIND_TO_BNETACCOUNT):lower(), 1, true)) then
+        return false
+    end
+
+    -- 2. Exclude non-restriction lines
+    -- Durability
+    if lower:find("durability") or lower:find("haltbarkeit") or lower:find("durabilit") or lower:find("durabilidad") then
         return false
     end
     
-    -- Exclude sell price / cost
-    if lower:find("sell price") or lower:find("verkaufspreis") or lower:find("prix de vente") then
+    -- Sell price / cost / refund
+    if lower:find("sell price") or lower:find("verkaufspreis") or lower:find("prix de vente") or lower:find("precio de venta") or lower:find("refund") or lower:find("r[uü]ckerstattung") then
         return false
     end
     
-    -- Exclude stat change comparisons (e.g. "-2 Strength", "replace this item")
-    if lower:find("replace this item") or lower:find("stat changes") or lower:find("^[%-%+]%d+") then
+    -- Stat change comparisons, stats, armor, damage, speed, DPS
+    if lower:find("replace this item") or lower:find("stat changes") or lower:find("^[%-%+]%d+")
+       or lower:find("^%d+%s+armor") or lower:find("^%d+%s+r[uü]stung") or lower:find("^%d+%s+armure")
+       or lower:find("damage") or lower:find("schaden") or lower:find("d[eé]g[aâ]ts")
+       or lower:find("speed") or lower:find("tempo") or lower:find("dps") then
         return false
     end
-    
-    -- Level requirement check: only a restriction if player's level is less than required!
-    local reqLvl = lower:match("requires level (%d+)") or lower:match("benötigt stufe (%d+)") or lower:match("niveau requis (%d+)")
+
+    -- Crafter lines ("<Made by ...>")
+    if lower:find("^<") or lower:find("<made by") or lower:find("<hergestellt") or lower:find("<cr[eé][eé]") then
+        return false
+    end
+
+    -- Unique, charges, use/equip/set effects
+    if lower:find("unique") or lower:find("einzigartig") or lower:find("charges") or lower:find("aufladungen")
+       or lower:find("^use:") or lower:find("^benutzen:") or lower:find("^utilisation :")
+       or lower:find("^equip:") or lower:find("^anlegen:") or lower:find("^chance on hit:") or lower:find("^set:") then
+        return false
+    end
+
+    -- Armor slots & armor types (when not checking weapon subclass)
+    if not isWeaponSubclassCheck then
+        if lower == "head" or lower == "neck" or lower == "shoulder" or lower == "back" or lower == "chest" or lower == "shirt" or lower == "tabard" or lower == "wrist" or lower == "hands" or lower == "waist" or lower == "legs" or lower == "feet" or lower == "finger" or lower == "trinket" or lower == "held in off-hand" or lower == "shield" or lower == "relic" or lower == "cloth" or lower == "leather" or lower == "mail" or lower == "plate" or lower == "one-hand" or lower == "two-hand" or lower == "main hand" or lower == "off hand" or lower == "ranged" or lower == "thrown" then
+            return false
+        end
+    end
+
+    -- 3. Level requirement check:
+    -- If player meets the item's level requirement (from GetItemInfo or parsed):
+    if itemReqLevel and playerLevel and playerLevel >= itemReqLevel then
+        if lower:find("level") or lower:find("stufe") or lower:find("niveau") or lower:find("nivel") then
+            return false
+        end
+    end
+
+    local reqLvl = lower:match("requires level (%d+)") or lower:match("ben[oö]tigt stufe (%d+)") or lower:match("niveau requis (%d+)") or lower:match("requiere nivel (%d+)") or lower:match("level (%d+)")
     if reqLvl then
         local num = tonumber(reqLvl)
         if num and playerLevel and playerLevel >= num then
@@ -310,8 +353,49 @@ local function IsEquipRestrictionLine(text, playerLevel)
         end
         return true -- Player is below the required level
     end
-    
-    return true
+
+    if lower:find("requires level") or lower:find("ben[oö]tigt stufe") or lower:find("niveau requis") then
+        if itemReqLevel and playerLevel and playerLevel >= itemReqLevel then
+            return false
+        end
+        return true
+    end
+
+    -- 4. Class restriction check: e.g. "Classes: Rogue, Druid"
+    if lower:find("^classes:") or lower:find("^classes%s*:") or lower:find("^klassen:") then
+        local playerClassLocalized, playerClassEnglish = UnitClass("player")
+        local pClass1 = playerClassLocalized and playerClassLocalized:lower()
+        local pClass2 = playerClassEnglish and playerClassEnglish:lower()
+        if (pClass1 and lower:find(pClass1, 1, true)) or (pClass2 and lower:find(pClass2, 1, true)) then
+            return false -- Player's class is allowed!
+        end
+        return true -- Player's class is not allowed!
+    end
+
+    -- 5. Race restriction check: e.g. "Races: Night Elf"
+    if lower:find("^races:") or lower:find("^races%s*:") or lower:find("^v[oö]lker:") then
+        local playerRaceLocalized, playerRaceEnglish = UnitRace("player")
+        local pRace1 = playerRaceLocalized and playerRaceLocalized:lower()
+        local pRace2 = playerRaceEnglish and playerRaceEnglish:lower()
+        if (pRace1 and lower:find(pRace1, 1, true)) or (pRace2 and lower:find(pRace2, 1, true)) then
+            return false -- Player's race is allowed!
+        end
+        return true -- Player's race is not allowed!
+    end
+
+    -- 6. Other "Requires <Profession/Faction/Skill>" restrictions
+    if lower:find("^requires%s+") or lower:find("^ben[oö]tigt%s+") or lower:find("^requiert%s+") or lower:find("^requiere%s+") then
+        if not (lower:find("level") or lower:find("stufe") or lower:find("niveau") or lower:find("nivel")) then
+            return true
+        end
+    end
+
+    -- 7. Weapon subclass check (on weapon right side: e.g. "Two-Handed Sword", "Bow", "Polearm")
+    if isWeaponSubclassCheck then
+        return true
+    end
+
+    return false
 end
 
 local redRestrictionCache = {}
@@ -326,7 +410,7 @@ restrictionCacheEventFrame:SetScript("OnEvent", function()
     redRestrictionCache = {}
 end)
 
-local function AM_HasRedEquippableRestriction(itemLink, bag, slot, ignoreRightColor)
+local function AM_HasRedEquippableRestriction(itemLink, bag, slot, ignoreRightColor, itemReqLevel)
     local playerLevel = (UnitLevel and UnitLevel("player")) or 0
     if redRestrictionCacheLevel ~= playerLevel then
         redRestrictionCache = {}
@@ -347,18 +431,21 @@ local function AM_HasRedEquippableRestriction(itemLink, bag, slot, ignoreRightCo
             data = C_TooltipInfo.GetHyperlink(itemLink)
         end
         if data and data.lines and not (AM and AM.IsSecret and AM:IsSecret(data.lines)) then
+            if TooltipUtil and TooltipUtil.SurfaceArgs then
+                pcall(TooltipUtil.SurfaceArgs, data)
+            end
             for _, line in ipairs(data.lines) do
                 if line and not (AM and AM.IsSecret and AM:IsSecret(line)) then
                     local leftText = GetLineText(line)
                     if line.leftColor and IsRedTooltipColor(line.leftColor.r, line.leftColor.g, line.leftColor.b) then
-                        if IsEquipRestrictionLine(leftText, playerLevel) then
+                        if IsEquipRestrictionLine(leftText, playerLevel, itemReqLevel, false) then
                             if cacheKey then redRestrictionCache[cacheKey] = true end
                             return true
                         end
                     end
                     if not ignoreRightColor and line.rightColor and IsRedTooltipColor(line.rightColor.r, line.rightColor.g, line.rightColor.b) then
                         local rightText = GetLineRightText(line)
-                        if IsEquipRestrictionLine(rightText, playerLevel) then
+                        if IsEquipRestrictionLine(rightText, playerLevel, itemReqLevel, true) then
                             if cacheKey then redRestrictionCache[cacheKey] = true end
                             return true
                         end
@@ -389,7 +476,7 @@ local function AM_HasRedEquippableRestriction(itemLink, bag, slot, ignoreRightCo
                 if leftFS and leftFS:IsShown() and leftText and not (AM and AM.IsSecret and AM:IsSecret(leftText)) then
                     local r, g, b = leftFS:GetTextColor()
                     if IsRedTooltipColor(r, g, b) then
-                        if IsEquipRestrictionLine(leftText, playerLevel) then
+                        if IsEquipRestrictionLine(leftText, playerLevel, itemReqLevel, false) then
                             if cacheKey then redRestrictionCache[cacheKey] = true end
                             return true
                         end
@@ -401,7 +488,7 @@ local function AM_HasRedEquippableRestriction(itemLink, bag, slot, ignoreRightCo
                     if rightFS and rightFS:IsShown() and rightText and not (AM and AM.IsSecret and AM:IsSecret(rightText)) then
                         local r, g, b = rightFS:GetTextColor()
                         if IsRedTooltipColor(r, g, b) then
-                            if IsEquipRestrictionLine(rightText, playerLevel) then
+                            if IsEquipRestrictionLine(rightText, playerLevel, itemReqLevel, true) then
                                 if cacheKey then redRestrictionCache[cacheKey] = true end
                                 return true
                             end
@@ -1787,7 +1874,8 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                     end
                     
                     btn.UpgradeText:Hide()
-                    if btn.icon then btn.icon:SetVertexColor(1, 1, 1) end
+                    local btnIcon = btn.icon or (btn.GetName and _G[btn:GetName() .. "IconTexture"])
+                    if btnIcon then btnIcon:SetVertexColor(1, 1, 1) end
                     
                     if not win.selectedCharacter and item.link then
                         local _, _, _, ilvl, reqLevel, _, _, _, equipLoc, _, _, classID, subclassID
@@ -1805,17 +1893,17 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
                         elseif classID == 4 then
                             if not AM_CanPlayerWearArmor(subclassID, equipLoc) then
                                 isUsable = false
-                            elseif AM_HasRedEquippableRestriction(item.link, item.bag, item.slot, true) then
+                            elseif AM_HasRedEquippableRestriction(item.link, item.bag, item.slot, true, reqLevel) then
                                 isUsable = false
                             end
                         elseif classID == 2 then
-                            if AM_HasRedEquippableRestriction(item.link, item.bag, item.slot, false) then
+                            if AM_HasRedEquippableRestriction(item.link, item.bag, item.slot, false, reqLevel) then
                                 isUsable = false
                             end
                         end
                         
-                        if not isUsable and btn.icon then
-                            btn.icon:SetVertexColor(1, 0.1, 0.1)
+                        if not isUsable and btnIcon then
+                            btnIcon:SetVertexColor(1, 0.1, 0.1)
                         end
                         
                         if ilvl and equipLoc and EQUIP_LOC_TO_SLOTS[equipLoc] and isUsable then
