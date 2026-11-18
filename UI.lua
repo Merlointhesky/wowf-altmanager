@@ -1497,7 +1497,27 @@ SLASH_ALTMANAGER2 = "/am"
 SLASH_ALTMANAGER3 = "/foreveraltmanager"
 SLASH_ALTMANAGER4 = "/fam"
 SlashCmdList["ALTMANAGER"] = function(msg)
-    AM.UI:ToggleMainFrame()
+    msg = msg and string.gsub(msg, "^%s*(.-)%s*$", "%1") or ""
+    local cmd, arg = strsplit(" ", msg, 2)
+    cmd = cmd and cmd:lower() or ""
+    if cmd == "cols" or cmd == "columns" or cmd == "width" then
+        local num = tonumber(arg)
+        if num then
+            num = math.max(8, math.min(20, num))
+            if AM.DB and AM.DB.SetBagColumns then
+                AM.DB:SetBagColumns(num)
+            end
+            if AM.BagUI and AM.BagUI.SetColumns then
+                AM.BagUI:SetColumns(num, true, true)
+            end
+            print(string.format("|cffffff00AltManager|r: Bag columns set to %d.", num))
+        else
+            local cur = (AM.DB and AM.DB.GetBagColumns and AM.DB:GetBagColumns()) or 10
+            print(string.format("|cffffff00AltManager|r: Current bag columns: %d. Usage: /am cols <8-20>", cur))
+        end
+    else
+        AM.UI:ToggleMainFrame()
+    end
 end
 
 -- Money Frame Injection for Alt Wealth Tracking

@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.7] - 2026-11-18
+
+### Added
+- **Auto-Open Containers**:
+  - Added auto-open capability for clams (Small Barnacled, Thick-Shelled, Big-Mouth, Jaggal, Large Borean, Abyssal, Soft-Shelled, Darksoil) and unopened boxes/containers.
+  - Added "Open:" checkbox to the bag window's bottom action bar alongside Auto-Repair and Auto-Sell Trash.
+  - Includes safe throttling, auto-looting on `LOOT_OPENED`, combat lockdown prevention, bag-capacity awareness, and tooltip/cooldown safety checks.
+- **Resizable OneBag Window**:
+  - Added bottom-right resize grip allowing players to freely size the bag window (tall vs. wide).
+  - Dynamic grid layout automatically fits slots into user-defined window width.
+  - Accommodates left side buttons and right inset margins (`TOTAL_WIDTH_MARGIN = 70px`) ensuring bag slots and section highlight borders never clip or overflow the window.
+  - Added `/am cols <8-20>` slash command and mouse wheel support on the resize grip to quickly adjust columns.
+  - Right-click on the resize grip resets the window back to default dimensions.
+  - Automatically expands window height if larger or additional bags are equipped so no items are cut off.
+  - Persistent window size and column layout across character logins and UI reloads.
+
+### Fixed
+- **Window Resizing Feedback Loop**:
+  - Decoupled window width from the grid layout, eliminating runaway shrinking and snapping back when resizing down.
+- **Database Pre-Load Safety**:
+  - Added `EnsureDBData` fallback in `Database.lua` to guard against uninitialized `self.data` before `ADDON_LOADED`.
+- **Equippable Item Restriction False Positives**:
+  - Refined tooltip restriction scanning to prevent false red overlays on equippable gear and BoE items.
+
+---
+
 ## [1.0.6] - 2026-11-08
 
 ### Fixed

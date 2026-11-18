@@ -317,28 +317,134 @@ function AM.DB:ToggleTrash(bag, slot, itemID)
     end
 end
 
+local function EnsureDBData(self)
+    if not self.data then
+        if AltManagerDB then
+            self.data = AltManagerDB
+        else
+            return nil
+        end
+    end
+    return self.data
+end
+
 function AM.DB:IsAutoSellTrashEnabled()
+    local data = EnsureDBData(self)
+    if not data then return false end
     local ruleset = self:GetRuleset()
-    if not self.data[ruleset] then self.data[ruleset] = {} end
-    return self.data[ruleset].autoSellTrash == true
+    if not ruleset or not data[ruleset] then return false end
+    return data[ruleset].autoSellTrash == true
 end
 
 function AM.DB:SetAutoSellTrashEnabled(val)
+    local data = EnsureDBData(self)
+    if not data then return end
     local ruleset = self:GetRuleset()
-    if not self.data[ruleset] then self.data[ruleset] = {} end
-    self.data[ruleset].autoSellTrash = val
+    if not ruleset then return end
+    if not data[ruleset] then data[ruleset] = {} end
+    data[ruleset].autoSellTrash = val
 end
 
 function AM.DB:IsAutoRepairEnabled()
+    local data = EnsureDBData(self)
+    if not data then return false end
     local ruleset = self:GetRuleset()
-    if not self.data[ruleset] then self.data[ruleset] = {} end
-    return self.data[ruleset].autoRepair == true
+    if not ruleset or not data[ruleset] then return false end
+    return data[ruleset].autoRepair == true
 end
 
 function AM.DB:SetAutoRepairEnabled(val)
+    local data = EnsureDBData(self)
+    if not data then return end
     local ruleset = self:GetRuleset()
-    if not self.data[ruleset] then self.data[ruleset] = {} end
-    self.data[ruleset].autoRepair = val
+    if not ruleset then return end
+    if not data[ruleset] then data[ruleset] = {} end
+    data[ruleset].autoRepair = val
+end
+
+function AM.DB:IsAutoOpenContainersEnabled()
+    local data = EnsureDBData(self)
+    if not data then return false end
+    local ruleset = self:GetRuleset()
+    if not ruleset or not data[ruleset] then return false end
+    return data[ruleset].autoOpenContainers == true
+end
+
+function AM.DB:SetAutoOpenContainersEnabled(val)
+    local data = EnsureDBData(self)
+    if not data then return end
+    local ruleset = self:GetRuleset()
+    if not ruleset then return end
+    if not data[ruleset] then data[ruleset] = {} end
+    data[ruleset].autoOpenContainers = val
+end
+
+function AM.DB:GetColumns(storageType)
+    local defaultCols = (storageType == "bank" or storageType == "combined") and 12 or 10
+    local data = EnsureDBData(self)
+    if not data then return defaultCols end
+    local ruleset = self:GetRuleset()
+    if not ruleset or not data[ruleset] then return defaultCols end
+    if storageType == "bank" or storageType == "combined" then
+        return data[ruleset].bankColumns or 12
+    else
+        return data[ruleset].bagColumns or 10
+    end
+end
+
+function AM.DB:SetColumns(storageType, cols)
+    local data = EnsureDBData(self)
+    if not data then return end
+    local ruleset = self:GetRuleset()
+    if not ruleset then return end
+    if not data[ruleset] then data[ruleset] = {} end
+    if storageType == "bank" or storageType == "combined" then
+        data[ruleset].bankColumns = cols
+    else
+        data[ruleset].bagColumns = cols
+    end
+end
+
+function AM.DB:GetBagColumns()
+    return self:GetColumns("bags")
+end
+
+function AM.DB:SetBagColumns(cols)
+    self:SetColumns("bags", cols)
+end
+
+function AM.DB:GetBankColumns()
+    return self:GetColumns("combined")
+end
+
+function AM.DB:SetBankColumns(cols)
+    self:SetColumns("combined", cols)
+end
+
+function AM.DB:GetWindowSize(storageType)
+    local defaultW = (storageType == "bank" or storageType == "combined") and 538 or 460
+    local defaultH = (storageType == "bank" or storageType == "combined") and 500 or 400
+    local data = EnsureDBData(self)
+    if not data then return defaultW, defaultH end
+    local ruleset = self:GetRuleset()
+    if not ruleset or not data[ruleset] then return defaultW, defaultH end
+    local keyW = (storageType == "bank" or storageType == "combined") and "bankWidth" or "bagWidth"
+    local keyH = (storageType == "bank" or storageType == "combined") and "bankHeight" or "bagHeight"
+    local w = data[ruleset][keyW] or defaultW
+    local h = data[ruleset][keyH] or defaultH
+    return w, h
+end
+
+function AM.DB:SetWindowSize(storageType, w, h)
+    local data = EnsureDBData(self)
+    if not data then return end
+    local ruleset = self:GetRuleset()
+    if not ruleset then return end
+    if not data[ruleset] then data[ruleset] = {} end
+    local keyW = (storageType == "bank" or storageType == "combined") and "bankWidth" or "bagWidth"
+    local keyH = (storageType == "bank" or storageType == "combined") and "bankHeight" or "bagHeight"
+    if w then data[ruleset][keyW] = math.floor(w + 0.5) end
+    if h then data[ruleset][keyH] = math.floor(h + 0.5) end
 end
 
 function AM:IsItemStackable(itemID, info)

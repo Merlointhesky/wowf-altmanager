@@ -215,6 +215,327 @@ function AM:SellTrashItems()
     end)
 end
 
+local KNOWN_CLAMS = {
+    [5523]  = true, -- Small Barnacled Clam
+    [5524]  = true, -- Thick-Shelled Clam
+    [15874] = true, -- Big-Mouth Clam
+    [24477] = true, -- Jaggal Clam
+    [34743] = true, -- Large Borean Clam
+    [45909] = true, -- Abyssal Clam
+    [61202] = true, -- Soft-Shelled Clam
+    [81655] = true, -- Darksoil Clam
+}
+
+function AM:IsOpenableContainer(bag, slot, itemID)
+    if not bag or not slot then return false end
+    if not itemID then
+        if C_Container and C_Container.GetContainerItemID then
+            itemID = C_Container.GetContainerItemID(bag, slot)
+        elseif GetContainerItemID then
+            itemID = GetContainerItemID(bag, slot)
+        end
+    end
+    if not itemID then return false end
+
+    -- Equipment and bags are never openable containers
+    local equipLoc
+    if C_Item and C_Item.GetItemInfo then
+        _, _, _, _, _, _, _, _, equipLoc = C_Item.GetItemInfo(itemID)
+    elseif GetItemInfo then
+        _, _, _, _, _, _, _, _, equipLoc = GetItemInfo(itemID)
+    end
+    if equipLoc and equipLoc ~= "" then return false end
+
+    -- Do not open items that start a quest
+    if AM.DB and AM.DB.ItemStartsQuest and AM.DB:ItemStartsQuest(itemID, nil, bag, slot) then
+        return false
+    end
+
+    -- Cooldown check (don't attempt if on cooldown)
+    local start, duration
+    if C_Container and C_Container.GetContainerItemCooldown then
+        start, duration = C_Container.GetContainerItemCooldown(bag, slot)
+    elseif GetContainerItemCooldown then
+        start, duration = GetContainerItemCooldown(bag, slot)
+    end
+    if duration and duration > 0 then return false end
+
+    -- Known clams are always openable
+    if KNOWN_CLAMS[itemID] then
+        return true
+    end
+
+    -- Scan tooltip for openable indicator and ensure item is not locked
+    if C_TooltipInfo and C_TooltipInfo.GetBagItem then
+        local data = C_TooltipInfo.GetBagItem(bag, slot)
+        if data and data.lines then
+            local isOpenable = false
+            local isLocked = false
+            for _, line in ipairs(data.lines) do
+                local text = line.leftText
+                if text and type(text) == "string" then
+                    local lower = text:lower()
+                    if (ITEM_OPENABLE and string.find(text, ITEM_OPENABLE, 1, true)) or
+                       (ITEM_OPENABLE_PVP and string.find(text, ITEM_OPENABLE_PVP, 1, true)) or
+                       string.find(lower, "right%s*click%s*to%s*open") or
+                       string.find(lower, "rechtsklick zum öffnen") or
+                       string.find(lower, "clic droit pour ouvrir") or
+                       string.find(lower, "haz clic derecho para abrir") then
+                        isOpenable = true
+                    end
+                    if (LOCKED and (text == LOCKED or string.find(text, "^" .. LOCKED))) or
+                       string.find(lower, "locked") or
+                       string.find(lower, "verriegelt") or
+                       string.find(lower, "verrouillé") or
+                       string.find(lower, "bloqueado") then
+                        isLocked = true
+                    end
+                end
+                if line.args then
+                    for _, arg in ipairs(line.args) do
+                        if type(arg) == "table" and arg.stringVal and type(arg.stringVal) == "string" then
+                            local lower = arg.stringVal:lower()
+                            if (ITEM_OPENABLE and string.find(arg.stringVal, ITEM_OPENABLE, 1, true)) or
+                               (ITEM_OPENABLE_PVP and string.find(arg.stringVal, ITEM_OPENABLE_PVP, 1, true)) or
+                               string.find(lower, "right%s*click%s*to%s*open") or
+                               string.find(lower, "rechtsklick zum öffnen") or
+                               string.find(lower, "clic droit pour ouvrir") or
+                               string.find(lower, "haz clic derecho para abrir") then
+                                isOpenable = true
+                            end
+                            if (LOCKED and (arg.stringVal == LOCKED or string.find(arg.stringVal, "^" .. LOCKED))) or
+                               string.find(lower, "locked") or
+                               string.find(lower, "verriegelt") or
+                               string.find(lower, "verrouillé") or
+                               string.find(lower, "bloqueado") then
+                                isLocked = true
+                            end
+                        end
+                    end
+                end
+            end
+            if isLocked then return false end
+            if isOpenable then return true end
+        end
+    end
+
+    local tip = AM.ScanTooltip or (AM.GetScanTooltip and AM.GetScanTooltip())
+    if tip and tip.SetBagItem then
+        tip:ClearLines()
+        tip:SetOwner(WorldFrame, "ANCHOR_NONE")
+        local ok = pcall(tip.SetBagItem, tip, bag, slot)
+        if ok then
+            local numLines = tip:NumLines()
+            if numLines and numLines > 0 then
+                local isOpenable = false
+                local isLocked = false
+                local tipName = tip:GetName() or "AltManagerScanTooltip"
+                for i = 1, numLines do
+                    local leftFS = _G[tipName .. "TextLeft" .. i]
+                    local text = leftFS and leftFS:GetText()
+                    if text and type(text) == "string" then
+                        local lower = text:lower()
+                        if (ITEM_OPENABLE and string.find(text, ITEM_OPENABLE, 1, true)) or
+                           (ITEM_OPENABLE_PVP and string.find(text, ITEM_OPENABLE_PVP, 1, true)) or
+                           string.find(lower, "right%s*click%s*to%s*open") or
+                           string.find(lower, "rechtsklick zum öffnen") or
+                           string.find(lower, "clic droit pour ouvrir") or
+                           string.find(lower, "haz clic derecho para abrir") then
+                            isOpenable = true
+                        end
+                        if (LOCKED and (text == LOCKED or string.find(text, "^" .. LOCKED))) or
+                           string.find(lower, "locked") or
+                           string.find(lower, "verriegelt") or
+                           string.find(lower, "verrouillé") or
+                           string.find(lower, "bloqueado") then
+                            isLocked = true
+                        end
+                    end
+                end
+                if isLocked then return false end
+                if isOpenable then return true end
+            end
+        end
+    end
+
+    return false
+end
+
+function AM:GetTotalFreeBagSlots()
+    local totalFree = 0
+    for bag = 0, NUM_BAG_SLOTS do
+        local free
+        if C_Container and C_Container.GetContainerNumFreeSlots then
+            free = C_Container.GetContainerNumFreeSlots(bag)
+        elseif GetContainerNumFreeSlots then
+            free = GetContainerNumFreeSlots(bag)
+        end
+        if free then totalFree = totalFree + free end
+    end
+    return totalFree
+end
+
+function AM:FindNextOpenableContainer()
+    for bag = 0, NUM_BAG_SLOTS do
+        local slots
+        if C_Container and C_Container.GetContainerNumSlots then
+            slots = C_Container.GetContainerNumSlots(bag)
+        elseif GetContainerNumSlots then
+            slots = GetContainerNumSlots(bag)
+        end
+        if slots then
+            for slot = 1, slots do
+                local key = bag .. "_" .. slot
+                if not (AM.ignoredOpenSlots and AM.ignoredOpenSlots[key]) then
+                    local itemID
+                    if C_Container and C_Container.GetContainerItemID then
+                        itemID = C_Container.GetContainerItemID(bag, slot)
+                    elseif GetContainerItemID then
+                        itemID = GetContainerItemID(bag, slot)
+                    end
+                    if itemID and AM:IsOpenableContainer(bag, slot, itemID) then
+                        return bag, slot, itemID
+                    end
+                end
+            end
+        end
+    end
+    return nil, nil, nil
+end
+
+function AM:HasOpenableContainers()
+    local b = AM:FindNextOpenableContainer()
+    return b ~= nil
+end
+
+function AM:StopAutoOpenContainers()
+    AM.isOpeningContainers = false
+    if AM.openContainerFrame then
+        AM.openContainerFrame:SetScript("OnUpdate", nil)
+    end
+    AM.ignoredOpenSlots = nil
+end
+
+function AM:StartAutoOpenContainers()
+    if AM.isOpeningContainers then return end
+    if InCombatLockdown and InCombatLockdown() then return end
+    if UnitIsDeadOrGhost and UnitIsDeadOrGhost("player") then return end
+    if not AM.DB or not AM.DB.IsAutoOpenContainersEnabled or not AM.DB:IsAutoOpenContainersEnabled() then
+        return
+    end
+
+    local firstBag, firstSlot, firstID = AM:FindNextOpenableContainer()
+    if not firstBag then return end
+
+    AM.isOpeningContainers = true
+    AM.ignoredOpenSlots = {}
+
+    if not AM.openContainerFrame then
+        AM.openContainerFrame = CreateFrame("Frame")
+        AM.openContainerFrame:RegisterEvent("LOOT_OPENED")
+        AM.openContainerFrame:SetScript("OnEvent", function(self, event)
+            if event == "LOOT_OPENED" and AM.isOpeningContainers then
+                local numLoot = (GetNumLootItems and GetNumLootItems()) or 0
+                if numLoot > 0 then
+                    for i = 1, numLoot do
+                        if LootSlot then LootSlot(i) end
+                    end
+                end
+            end
+        end)
+    end
+
+    local elapsedSinceLastOpen = 0
+    local openedCount = 0
+    local retryCount = 0
+    local lastBag, lastSlot, lastItemID = nil, nil, nil
+
+    AM.openContainerFrame:SetScript("OnUpdate", function(self, elapsed)
+        elapsedSinceLastOpen = elapsedSinceLastOpen + elapsed
+        if elapsedSinceLastOpen < 0.6 then return end
+
+        if (InCombatLockdown and InCombatLockdown()) or (UnitIsDeadOrGhost and UnitIsDeadOrGhost("player")) then
+            AM:StopAutoOpenContainers()
+            return
+        end
+
+        if not AM.DB or not AM.DB.IsAutoOpenContainersEnabled or not AM.DB:IsAutoOpenContainersEnabled() then
+            AM:StopAutoOpenContainers()
+            return
+        end
+
+        -- If casting or channeling (e.g. Opening cast bar), wait
+        if (UnitCastingInfo and UnitCastingInfo("player")) or (UnitChannelInfo and UnitChannelInfo("player")) then
+            return
+        end
+
+        -- If cursor has item, wait
+        if CursorHasItem and CursorHasItem() then
+            return
+        end
+
+        -- If LootFrame is open, try looting it and wait for it to close
+        if LootFrame and LootFrame:IsShown() then
+            local numLoot = (GetNumLootItems and GetNumLootItems()) or 0
+            if numLoot > 0 then
+                for i = 1, numLoot do
+                    if LootSlot then LootSlot(i) end
+                end
+            end
+            return
+        end
+
+        local freeSlots = AM:GetTotalFreeBagSlots()
+        if freeSlots <= 0 then
+            AM:StopAutoOpenContainers()
+            print("|cffffff00AltManager|r: Bags are full. Stopping Auto-Open.")
+            return
+        end
+
+        local bag, slot, itemID = AM:FindNextOpenableContainer()
+        if not bag then
+            AM:StopAutoOpenContainers()
+            if openedCount > 0 then
+                local countStr = (openedCount == 1) and "1 container" or string.format("%d containers", openedCount)
+                print(string.format("|cffffff00AltManager|r: Auto-opened %s.", countStr))
+            end
+            return
+        end
+
+        local info
+        if C_Container and C_Container.GetContainerItemInfo then
+            info = C_Container.GetContainerItemInfo(bag, slot)
+        end
+        if info and info.isLocked then
+            return -- Wait for server lock to clear
+        end
+
+        -- Stuck detection: if same bag/slot fails 5 times, skip it
+        if bag == lastBag and slot == lastSlot and itemID == lastItemID then
+            retryCount = retryCount + 1
+            if retryCount >= 5 then
+                local key = bag .. "_" .. slot
+                AM.ignoredOpenSlots[key] = true
+                retryCount = 0
+            end
+        else
+            lastBag = bag
+            lastSlot = slot
+            lastItemID = itemID
+            retryCount = 0
+        end
+
+        elapsedSinceLastOpen = 0
+        openedCount = openedCount + 1
+
+        if C_Container and C_Container.UseContainerItem then
+            C_Container.UseContainerItem(bag, slot)
+        elseif UseContainerItem then
+            UseContainerItem(bag, slot)
+        end
+    end)
+end
+
 local EQUIP_LOC_TO_SLOTS = {
     INVTYPE_HEAD = {1},
     INVTYPE_NECK = {2},
@@ -682,21 +1003,38 @@ local function AM_GetEquippedItemLevel(equipLoc, itemClassID, itemSubclassID)
 end
 
 
-local trashEventFrame = CreateFrame("Frame")
-trashEventFrame:RegisterEvent("MERCHANT_SHOW")
-trashEventFrame:SetScript("OnEvent", function()
-    if AM.DB and AM.DB.IsAutoSellTrashEnabled and AM.DB:IsAutoSellTrashEnabled() then
-        AM:SellTrashItems()
-    end
-    if AM.DB and AM.DB.IsAutoRepairEnabled and AM.DB:IsAutoRepairEnabled() and CanMerchantRepair() then
-        local cost, canRepair = GetRepairAllCost()
-        if canRepair and cost > 0 then
-            local money = GetMoney()
-            if money >= cost then
-                RepairAllItems()
-                print(string.format("|cffffff00AltManager|r: Repaired all items for %s", AM_FormatGold(cost)))
-            else
-                print("|cffffff00AltManager|r: Not enough money to Auto-Repair.")
+local autoActionsFrame = CreateFrame("Frame")
+autoActionsFrame:RegisterEvent("MERCHANT_SHOW")
+autoActionsFrame:RegisterEvent("BAG_UPDATE_DELAYED")
+autoActionsFrame:RegisterEvent("LOOT_CLOSED")
+autoActionsFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+autoActionsFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+autoActionsFrame:SetScript("OnEvent", function(self, event)
+    if event == "MERCHANT_SHOW" then
+        if AM.DB and AM.DB.IsAutoSellTrashEnabled and AM.DB:IsAutoSellTrashEnabled() then
+            AM:SellTrashItems()
+        end
+        if AM.DB and AM.DB.IsAutoRepairEnabled and AM.DB:IsAutoRepairEnabled() and CanMerchantRepair() then
+            local cost, canRepair = GetRepairAllCost()
+            if canRepair and cost > 0 then
+                local money = GetMoney()
+                if money >= cost then
+                    RepairAllItems()
+                    print(string.format("|cffffff00AltManager|r: Repaired all items for %s", AM_FormatGold(cost)))
+                else
+                    print("|cffffff00AltManager|r: Not enough money to Auto-Repair.")
+                end
+            end
+        end
+        if AM.DB and AM.DB.IsAutoOpenContainersEnabled and AM.DB:IsAutoOpenContainersEnabled() then
+            AM:StartAutoOpenContainers()
+        end
+    elseif event == "BAG_UPDATE_DELAYED" or event == "LOOT_CLOSED" or event == "PLAYER_REGEN_ENABLED" or event == "GET_ITEM_INFO_RECEIVED" then
+        if AM.DB and AM.DB.IsAutoOpenContainersEnabled and AM.DB:IsAutoOpenContainersEnabled() then
+            if not (InCombatLockdown and InCombatLockdown()) and not AM.isOpeningContainers then
+                if AM:HasOpenableContainers() then
+                    AM:StartAutoOpenContainers()
+                end
             end
         end
     end
@@ -709,15 +1047,123 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     end
     win.hideExtras = hideExtras
 
-    win:SetSize(400, 500)
+    local initW, initH = 460, 400
+    if storageType == "bank" or storageType == "combined" then
+        initW, initH = 538, 500
+    end
+    if AM.DB and AM.DB.GetWindowSize then
+        initW, initH = AM.DB:GetWindowSize(storageType)
+    end
+    win:SetSize(initW or 460, initH or 400)
     win:SetPoint("CENTER")
     win:Hide()
     win:SetMovable(true)
     win:EnableMouse(true)
     win:RegisterForDrag("LeftButton")
     win:SetScript("OnDragStart", win.StartMoving)
-    win:SetScript("OnDragStop", win.StopMovingOrSizing)
+    win:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        if self.isResizing and self.FinishSizing then
+            self:FinishSizing()
+        end
+    end)
     win:SetToplevel(true)
+    win:SetClampedToScreen(true)
+
+    local BUTTON_SIZE = 37
+    local SPACING = 2
+    local MIN_COLUMNS = 8
+    local MAX_COLUMNS = 20
+    local GRID_START_X = 45
+    local RIGHT_PADDING = 25
+    local TOTAL_WIDTH_MARGIN = GRID_START_X + RIGHT_PADDING -- 70
+
+    local function CalculateTargetWidth(cols)
+        return cols * (BUTTON_SIZE + SPACING) + TOTAL_WIDTH_MARGIN
+    end
+
+    local function CalculateColumnsFromWidth(width)
+        local cols = math.floor((width - TOTAL_WIDTH_MARGIN) / (BUTTON_SIZE + SPACING))
+        return math.max(MIN_COLUMNS, math.min(MAX_COLUMNS, cols))
+    end
+    win.CalculateColumnsFromWidth = CalculateColumnsFromWidth
+
+    win.currentColumns = CalculateColumnsFromWidth(win:GetWidth())
+
+    win:SetResizable(true)
+    local minW = 400
+    local maxW = CalculateTargetWidth(MAX_COLUMNS) + 50
+    local minH = 260
+    local maxH = 1400
+
+    if win.SetResizeBounds then
+        win:SetResizeBounds(minW, minH, maxW, maxH)
+    else
+        if win.SetMinResize then win:SetMinResize(minW, minH) end
+        if win.SetMaxResize then win:SetMaxResize(maxW, maxH) end
+    end
+
+    win.SetColumns = function(self, cols, force, adjustWidth)
+        cols = math.max(MIN_COLUMNS, math.min(MAX_COLUMNS, cols))
+        if force or self.currentColumns ~= cols then
+            self.currentColumns = cols
+            if AM.DB and AM.DB.SetColumns then
+                AM.DB:SetColumns(self.storageType, cols)
+            end
+            if adjustWidth and not AM_InLockdown() then
+                local newW = CalculateTargetWidth(cols)
+                self:SetWidth(newW)
+                if AM.DB and AM.DB.SetWindowSize then
+                    AM.DB:SetWindowSize(self.storageType, newW, self:GetHeight())
+                end
+            end
+            if not AM_InLockdown() then
+                self:Update()
+            else
+                self.pendingCombatUpdate = true
+            end
+        end
+    end
+
+    win.FinishSizing = function(self)
+        if not self.isResizing then return end
+        self:StopMovingOrSizing()
+        self.isResizing = false
+        local curW = self:GetWidth()
+        local curH = self:GetHeight()
+        local cols = CalculateColumnsFromWidth(curW)
+        self.currentColumns = cols
+
+        local neededHeight = self.neededHeight or 260
+        if curH < neededHeight and not AM_InLockdown() then
+            curH = neededHeight
+            self:SetHeight(curH)
+        end
+
+        if AM.DB and AM.DB.SetColumns then
+            AM.DB:SetColumns(self.storageType, cols)
+        end
+        if AM.DB and AM.DB.SetWindowSize then
+            AM.DB:SetWindowSize(self.storageType, curW, curH)
+        end
+
+        if not AM_InLockdown() then
+            self:Update()
+        end
+    end
+
+    win:HookScript("OnSizeChanged", function(self, width, height)
+        if self.isResizing and not AM_InLockdown() then
+            local cols = CalculateColumnsFromWidth(width)
+            if cols ~= self.currentColumns then
+                self.currentColumns = cols
+                if AM.DB and AM.DB.SetColumns then
+                    AM.DB:SetColumns(self.storageType, cols)
+                end
+                self:Update()
+            end
+        end
+    end)
     
     win.title = win:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     win.title:SetPoint("TOP", 0, -5)
@@ -1019,7 +1465,7 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     end)
     
     win.moneyText = win:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    win.moneyText:SetPoint("BOTTOMRIGHT", -15, 15)
+    win.moneyText:SetPoint("BOTTOMRIGHT", -22, 15)
     
     if not hideExtras then
         local btnSellTrash = CreateIconButton(win, windowName.."SellTrash", "Interface\\Icons\\Achievement_GuildPerk_CashFlow_Rank2", "Sell Trash (Gray items + Custom Trash)", "RIGHT", win.moneyText, "LEFT", -15, 0, function()
@@ -1080,6 +1526,40 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         repairText:SetPoint("RIGHT", win.repairTotalText, "LEFT", -5, 0)
         repairText:SetText("Repair:")
         repairText:SetTextColor(1, 0.82, 0)
+
+        local chkAutoOpen = CreateFrame("CheckButton", windowName.."AutoOpen", win, "UICheckButtonTemplate")
+        chkAutoOpen:SetSize(24, 24)
+        chkAutoOpen:SetPoint("RIGHT", repairText, "LEFT", -10, 0)
+        chkAutoOpen:SetScript("OnShow", function(self)
+            if AM.DB and AM.DB.IsAutoOpenContainersEnabled then
+                self:SetChecked(AM.DB:IsAutoOpenContainersEnabled())
+            end
+        end)
+        chkAutoOpen:SetScript("OnClick", function(self)
+            if AM.DB and AM.DB.SetAutoOpenContainersEnabled then
+                local checked = self:GetChecked()
+                AM.DB:SetAutoOpenContainersEnabled(checked)
+                if checked and AM.StartAutoOpenContainers then
+                    AM:StartAutoOpenContainers()
+                elseif not checked and AM.StopAutoOpenContainers then
+                    AM:StopAutoOpenContainers()
+                end
+            end
+        end)
+        chkAutoOpen:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine("Auto-Open Containers")
+            GameTooltip:AddLine("Automatically open containers, boxes, and clam shells.", 1, 1, 1, true)
+            GameTooltip:Show()
+        end)
+        chkAutoOpen:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
+        win.chkAutoOpen = chkAutoOpen
+
+        local openText = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        openText:SetPoint("RIGHT", chkAutoOpen, "LEFT", -3, 0)
+        openText:SetText("Open:")
+        openText:SetTextColor(1, 0.82, 0)
+        win.openText = openText
     end
     
     local moneyFrame = CreateFrame("Frame", nil, win)
@@ -1093,6 +1573,69 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         GameTooltip:Show()
     end)
     moneyFrame:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local resizeGrip = CreateFrame("Button", windowName.."ResizeGrip", win)
+    resizeGrip:SetSize(18, 18)
+    resizeGrip:SetPoint("BOTTOMRIGHT", win, "BOTTOMRIGHT", -3, 3)
+    resizeGrip:SetFrameLevel(win:GetFrameLevel() + 15)
+    resizeGrip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    resizeGrip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    resizeGrip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    resizeGrip:EnableMouse(true)
+    resizeGrip:EnableMouseWheel(true)
+
+    resizeGrip:SetScript("OnMouseDown", function(self, button)
+        if button == "LeftButton" and not AM_InLockdown() then
+            local left, top = win:GetLeft(), win:GetTop()
+            if left and top then
+                win:ClearAllPoints()
+                win:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+            end
+            win.isResizing = true
+            win:StartSizing("BOTTOMRIGHT")
+        elseif button == "RightButton" and not AM_InLockdown() then
+            local defaultCols = (win.storageType == "combined" and 12 or 10)
+            local defaultW = (win.storageType == "combined" and 538 or 460)
+            local defaultH = (win.storageType == "combined" and 500 or 400)
+            win:SetColumns(defaultCols, true, true)
+            win:SetSize(defaultW, defaultH)
+            if AM.DB and AM.DB.SetWindowSize then
+                AM.DB:SetWindowSize(win.storageType, defaultW, defaultH)
+            end
+            win:Update()
+        end
+    end)
+
+    local function StopSizing()
+        if win.isResizing and win.FinishSizing then
+            win:FinishSizing()
+        end
+    end
+
+    resizeGrip:SetScript("OnMouseUp", StopSizing)
+    win:HookScript("OnMouseUp", StopSizing)
+
+    resizeGrip:SetScript("OnMouseWheel", function(self, delta)
+        if AM_InLockdown() then return end
+        local cur = win.currentColumns or (win.storageType == "combined" and 12 or 10)
+        win:SetColumns(cur + delta, false, true)
+        if GameTooltip:GetOwner() == self then
+            local onEnter = self:GetScript("OnEnter")
+            if onEnter then onEnter(self) end
+        end
+    end)
+
+    resizeGrip:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Resize Bag")
+        GameTooltip:AddLine("Drag or scroll to adjust width (tall vs wide).", 1, 1, 1, true)
+        GameTooltip:AddLine(string.format("Current width: %d columns", win.currentColumns or 10), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("Scroll wheel: Adjust columns", 0.7, 0.9, 1.0)
+        GameTooltip:AddLine("Right-click: Reset to default", 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+    end)
+    resizeGrip:SetScript("OnLeave", function(self) GameTooltip:Hide() end)
+    win.resizeGrip = resizeGrip
 
     
     win.bgContainer = CreateFrame("Frame", nil, win)
@@ -1540,7 +2083,10 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
             end
         end
         
-        local COLUMNS = 10
+        local curW = self:GetWidth() or 460
+        if curW <= 0 then curW = 460 end
+        local COLUMNS = CalculateColumnsFromWidth(curW)
+        self.currentColumns = COLUMNS
         local BUTTON_SIZE = 37
         local SPACING = 2
         
@@ -2054,14 +2600,15 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
         local minHeight = 260
         local finalHeight = math.abs(yOffset) + 20
         if finalHeight < minHeight then finalHeight = minHeight end
-        local targetWidth = COLUMNS * (BUTTON_SIZE + SPACING) + 60
-        if self.AM_Width ~= targetWidth or self.AM_Height ~= finalHeight then
-            if not inCombat then
-                self:SetSize(targetWidth, finalHeight)
-                self.AM_Width = targetWidth
-                self.AM_Height = finalHeight
-            else
-                needsPostCombatLayout = true
+        self.neededHeight = finalHeight
+
+        if not self.isResizing and not inCombat then
+            local curH = self:GetHeight()
+            if curH < finalHeight then
+                self:SetHeight(finalHeight)
+                if AM.DB and AM.DB.SetWindowSize then
+                    AM.DB:SetWindowSize(self.storageType, self:GetWidth(), finalHeight)
+                end
             end
         end
         
@@ -2157,8 +2704,28 @@ function AM:CreateInventoryWindow(windowName, titleText, storageType, liveSectio
     win:RegisterEvent("GET_ITEM_INFO_RECEIVED")
     win:RegisterEvent("PLAYER_MONEY")
     
-    win:SetScript("OnShow", function(self) self:Update() end)
+    win:SetScript("OnShow", function(self)
+        if not self.hasLoadedSavedSize and AM.DB and AM.DB.GetWindowSize then
+            local savedW, savedH = AM.DB:GetWindowSize(self.storageType)
+            if savedW and savedH then
+                self:SetSize(savedW, savedH)
+                if self.CalculateColumnsFromWidth then
+                    self.currentColumns = self.CalculateColumnsFromWidth(savedW)
+                end
+            end
+            self.hasLoadedSavedSize = true
+        end
+        self:Update()
+        if self.storageType == "bags" and AM.DB and AM.DB.IsAutoOpenContainersEnabled and AM.DB:IsAutoOpenContainersEnabled() then
+            if not (InCombatLockdown and InCombatLockdown()) then
+                AM:StartAutoOpenContainers()
+            end
+        end
+    end)
     win:SetScript("OnHide", function(self)
+        if self.isResizing and self.FinishSizing then
+            self:FinishSizing()
+        end
         local wasAlt = (self.selectedCharacter ~= nil)
         local hadSearch = (self.searchQuery ~= "")
         self.selectedCharacter = nil
