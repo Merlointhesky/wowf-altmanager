@@ -1,6 +1,8 @@
 # Forever Alt Manager
 
-**Version:** 1.0.6  
+**Version:** 1.0.7  
+**Author:** Merlointhesky  
+**License:** GNU General Public License v3.0 (GPL-3.0)  
 **WoW Version:** WoW Forever Beta (v1.60.1)  
 **Interface:** `16001`  
 
@@ -17,3 +19,7 @@ A comprehensive alt management tool designed for the WoW Forever Beta. It tracks
 
 ## Important Note for WoW Forever Beta
 Due to a known beta bug preventing `SavedVariables` from persisting on logout, this addon implements a local manual serialization workaround to ensure your data is safely stored between sessions. Data is also strictly scoped via `[Ruleset][Faction]` to respect the realmless nature of WoW Forever.
+
+## License
+This project is licensed under the **GNU General Public License v3.0** (GPL-3.0). See the [LICENSE](LICENSE) file for complete details.
+
